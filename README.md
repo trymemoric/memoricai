@@ -215,7 +215,7 @@ JSON and multipart bodies are capped at 12 MiB; individual document/file content
 | Settings | `GET/PATCH /v1/settings`, `POST /v1/settings/reset` |
 | Memory Router | `POST /v1/router/{*target}` — OpenAI-compatible proxy; `Authorization` carries the upstream key, `x-memoricai-api-key` the memoricai key, optional `x-mc-project` selects the project |
 
-See [`docs/architecture.md`](docs/architecture.md) for request lifecycles, the data model, and design rationale.
+See [`docs/api.md`](docs/api.md) for the full endpoint reference (request/response fields, error envelope, metadata filters), and [`docs/architecture.md`](docs/architecture.md) for request lifecycles, the data model, and design rationale.
 
 ## SDKs
 
@@ -227,7 +227,7 @@ First-party clients for the `/v1` API, all covering documents, search (including
 | Python (3.9+, stdlib-only) | [`sdks/python`](sdks/python) | `pip install memoricai` |
 | TypeScript (Node 18+/Bun/Deno, zero-dep) | [`sdks/typescript`](sdks/typescript) | `npm install memoricai` |
 
-All three follow the same shape — construct a client with base URL + `mc_` key, add content, wait for processing, then search with `digest: true` for ready-to-inject context:
+Detailed guides: [Rust](docs/sdk-rust.md) · [Python](docs/sdk-python.md) · [TypeScript](docs/sdk-typescript.md). All three follow the same shape — construct a client with base URL + `mc_` key, add content, wait for processing, then search with `digest: true` for ready-to-inject context:
 
 ```python
 from memoricai import Client
