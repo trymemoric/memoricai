@@ -9,3 +9,4 @@ sdks/python/build
 sdks/python/*.egg-info
 __pycache__/
 sdks/typescript/bun.lock
+sdks/python/dist

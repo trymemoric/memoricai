@@ -90,7 +90,7 @@ docker run -d --name memoricai-pg -e POSTGRES_PASSWORD=postgres \
 #   brew install postgresql@16 pgvector && brew services start postgresql@16
 #   createdb memoricai && psql -d memoricai -c 'CREATE EXTENSION IF NOT EXISTS vector;'
 
-# 2. Build
+# 2. Build (or: docker pull ghcr.io/skundu42/memoricai:latest)
 cargo build --release
 
 # 3. Point it at your models (any OpenAI-compatible endpoint; see Model configuration)
@@ -223,9 +223,9 @@ First-party clients for the `/v1` API, all covering documents, search (including
 
 | Language | Where | Install |
 |---|---|---|
-| Rust | [`crates/memoricai-client`](crates/memoricai-client) | `memoricai-client = { path = "crates/memoricai-client" }` |
-| Python (3.9+, stdlib-only) | [`sdks/python`](sdks/python) | `pip install ./sdks/python` |
-| TypeScript (Node 18+/Bun/Deno, zero-dep) | [`sdks/typescript`](sdks/typescript) | `npm install ./sdks/typescript` |
+| Rust | [`crates/memoricai-client`](crates/memoricai-client) | `cargo add memoricai-client` |
+| Python (3.9+, stdlib-only) | [`sdks/python`](sdks/python) | `pip install memoricai` |
+| TypeScript (Node 18+/Bun/Deno, zero-dep) | [`sdks/typescript`](sdks/typescript) | `npm install memoricai` |
 
 All three follow the same shape — construct a client with base URL + `mc_` key, add content, wait for processing, then search with `digest: true` for ready-to-inject context:
 

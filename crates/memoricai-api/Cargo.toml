@@ -1,5 +1,6 @@
 [package]
 name = "memoricai-api"
+publish = false
 edition.workspace = true
 version.workspace = true
 license.workspace = true

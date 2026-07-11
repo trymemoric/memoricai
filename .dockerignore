@@ -1,0 +1,9 @@
+target
+.git
+sdks/typescript/node_modules
+sdks/typescript/dist
+sdks/python/build
+sdks/python/dist
+sdks/python/*.egg-info
+**/__pycache__
+memoricai-data

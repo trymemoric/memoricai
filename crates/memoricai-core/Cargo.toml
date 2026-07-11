@@ -1,5 +1,10 @@
 [package]
 name = "memoricai-core"
+description = "Core domain types, wire DTOs, and provider ports for memoricai — a memory & context engine for AI agents"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["memory", "ai", "agents", "llm"]
+categories = ["data-structures", "api-bindings"]
 edition.workspace = true
 version.workspace = true
 license.workspace = true

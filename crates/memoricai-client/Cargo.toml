@@ -1,6 +1,11 @@
 [package]
 name = "memoricai-client"
-description = "Rust SDK for the memoricai /v1 HTTP API"
+description = "Rust SDK for memoricai — a self-hostable memory & context engine for AI agents (/v1 HTTP API)"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["memory", "ai", "agents", "llm", "sdk"]
+categories = ["api-bindings"]
 edition.workspace = true
 version.workspace = true
 license.workspace = true

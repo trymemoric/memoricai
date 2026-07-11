@@ -7,6 +7,8 @@ edition = "2021"
 version = "0.1.0"
 license = "MIT"
 rust-version = "1.88"
+repository = "https://github.com/skundu42/memoricai"
+homepage = "https://github.com/skundu42/memoricai"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -18,8 +20,8 @@ dbg_macro = "warn"
 todo = "warn"
 
 [workspace.dependencies]
-# internal crates
-memoricai-core = { path = "crates/memoricai-core" }
+# internal crates (version required so published crates resolve on crates.io)
+memoricai-core = { path = "crates/memoricai-core", version = "0.1.0" }
 memoricai-db = { path = "crates/memoricai-db" }
 memoricai-models = { path = "crates/memoricai-models" }
 memoricai-engine = { path = "crates/memoricai-engine" }
