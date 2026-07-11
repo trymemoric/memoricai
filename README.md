@@ -225,7 +225,7 @@ First-party clients for the `/v1` API, all covering documents, search (including
 |---|---|---|
 | Rust | [`crates/memoricai-client`](crates/memoricai-client) | `cargo add memoricai-client` |
 | Python (3.9+, stdlib-only) | [`sdks/python`](sdks/python) | `pip install memoricai` |
-| TypeScript (Node 18+/Bun/Deno, zero-dep) | [`sdks/typescript`](sdks/typescript) | `npm install memoricai` |
+| TypeScript (Node 18+/Bun/Deno, zero-dep) | [`sdks/typescript`](sdks/typescript) | `npm install @memoricai/sdk` |
 
 Detailed guides: [Rust](docs/sdk-rust.md) · [Python](docs/sdk-python.md) · [TypeScript](docs/sdk-typescript.md). All three follow the same shape — construct a client with base URL + `mc_` key, add content, wait for processing, then search with `digest: true` for ready-to-inject context:
 

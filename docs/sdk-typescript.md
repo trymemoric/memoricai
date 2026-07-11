@@ -1,17 +1,17 @@
-# TypeScript SDK (`memoricai`)
+# TypeScript SDK (`@memoricai/sdk`)
 
 Zero-dependency client for the [`/v1` HTTP API](api.md), built on the global
 `fetch` — works on Node 18+, Bun, Deno, and edge runtimes. Fully typed request
 and response interfaces; ESM.
 
 ```bash
-npm install memoricai
+npm install @memoricai/sdk
 ```
 
 ## Quickstart
 
 ```ts
-import { MemoricaiClient } from "memoricai";
+import { MemoricaiClient } from "@memoricai/sdk";
 
 const client = new MemoricaiClient("http://localhost:6767", "mc_...");
 

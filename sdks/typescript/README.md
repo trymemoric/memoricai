@@ -3,7 +3,7 @@
 Zero-dependency client for the memoricai `/v1` HTTP API (Node 18+ / Bun / Deno — anything with global `fetch`).
 
 ```ts
-import { MemoricaiClient } from "memoricai";
+import { MemoricaiClient } from "@memoricai/sdk";
 
 const client = new MemoricaiClient("http://localhost:6767", "mc_...");
 
