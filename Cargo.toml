@@ -1,0 +1,77 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+rust-version = "1.88"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+dbg_macro = "warn"
+todo = "warn"
+
+[workspace.dependencies]
+# internal crates
+memoricai-core = { path = "crates/memoricai-core" }
+memoricai-db = { path = "crates/memoricai-db" }
+memoricai-models = { path = "crates/memoricai-models" }
+memoricai-engine = { path = "crates/memoricai-engine" }
+memoricai-auth = { path = "crates/memoricai-auth" }
+memoricai-api = { path = "crates/memoricai-api" }
+memoricai-mcp = { path = "crates/memoricai-mcp" }
+memoricai-connectors = { path = "crates/memoricai-connectors" }
+
+# async runtime + web
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+futures = "0.3"
+
+# serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# db
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "json", "chrono"] }
+
+# http client (rustls to avoid native-tls build issues)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream", "http2"] }
+
+# errors / logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# utils
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+nanoid = "0.4"
+blake3 = "1"
+regex = "1"
+url = "2"
+rand = "0.8"
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+argon2 = "0.5"
+moka = { version = "0.12", features = ["future"] }
+sysinfo = "0.32"
+clap = { version = "4", features = ["derive", "env"] }
+
+# extraction
+scraper = "0.27"
+pulldown-cmark = "0.12"
+lopdf = { version = "0.44", default-features = false }
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -1,0 +1,5 @@
+[advisories]
+# cargo-audit follows sqlx's optional MySQL dependency from Cargo.lock even
+# though this Postgres-only build does not enable or compile sqlx-mysql. Keep
+# this narrow exception until the upstream rsa advisory has a fixed release.
+ignore = ["RUSTSEC-2023-0071"]
