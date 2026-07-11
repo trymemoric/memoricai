@@ -3,6 +3,8 @@
 //! required; there is no implicit fallback provider.
 
 pub mod extra;
+#[cfg(feature = "local-embeddings")]
+pub mod local;
 pub mod openai;
 #[doc(hidden)]
 pub mod testing;
@@ -74,28 +76,32 @@ impl ModelStack {
             )
         };
 
-        let emb_base =
-            env_any(&["MEMORICAI_EMBEDDING_BASE_URL", "OPENAI_BASE_URL"]).ok_or_else(|| {
-                Error::Model(
-                    "model configuration required: set MEMORICAI_EMBEDDING_BASE_URL (or \
-                     OPENAI_BASE_URL) to an OpenAI-compatible embeddings endpoint"
-                        .into(),
+        let (embedder, embedder_label): (Arc<dyn EmbeddingProvider>, String) =
+            if env_any(&["MEMORICAI_EMBEDDING_PROVIDER"]).as_deref() == Some("local") {
+                Self::local_embedder(dim)?
+            } else {
+                let emb_base = env_any(&["MEMORICAI_EMBEDDING_BASE_URL", "OPENAI_BASE_URL"])
+                    .ok_or_else(|| {
+                        Error::Model(
+                            "model configuration required: set MEMORICAI_EMBEDDING_BASE_URL (or \
+                             OPENAI_BASE_URL) to an OpenAI-compatible embeddings endpoint, or \
+                             MEMORICAI_EMBEDDING_PROVIDER=local for in-process embeddings"
+                                .into(),
+                        )
+                    })?;
+                let key = env_any(&["MEMORICAI_EMBEDDING_API_KEY", "OPENAI_API_KEY"]);
+                let model = env_any(&["MEMORICAI_EMBEDDING_MODEL"])
+                    .unwrap_or_else(|| "text-embedding-3-small".into());
+                (
+                    Arc::new(OpenAiEmbedder::new(
+                        emb_base.clone(),
+                        key,
+                        model.clone(),
+                        dim,
+                    )),
+                    format!("openai:{model}@{emb_base}"),
                 )
-            })?;
-        let (embedder, embedder_label): (Arc<dyn EmbeddingProvider>, String) = {
-            let key = env_any(&["MEMORICAI_EMBEDDING_API_KEY", "OPENAI_API_KEY"]);
-            let model = env_any(&["MEMORICAI_EMBEDDING_MODEL"])
-                .unwrap_or_else(|| "text-embedding-3-small".into());
-            (
-                Arc::new(OpenAiEmbedder::new(
-                    emb_base.clone(),
-                    key,
-                    model.clone(),
-                    dim,
-                )),
-                format!("openai:{model}@{emb_base}"),
-            )
-        };
+            };
 
         // Reranker: dedicated rerank endpoint if configured, else LLM-based.
         let reranker: Arc<dyn Reranker> = match env_any(&["MEMORICAI_RERANK_URL"]) {
@@ -137,5 +143,42 @@ impl ModelStack {
 
     pub fn dim(&self) -> usize {
         self.embedder.dim()
+    }
+
+    /// Construct the in-process embedder (`MEMORICAI_EMBEDDING_PROVIDER=local`).
+    /// Model: `MEMORICAI_EMBEDDING_MODEL` (default `nomic-embed-text-v1.5`);
+    /// weights cache: `MEMORICAI_MODEL_CACHE_DIR` (default
+    /// `$HOME/.cache/memoricai/models`). The configured dimension must match
+    /// the model's native dimension.
+    #[cfg(feature = "local-embeddings")]
+    fn local_embedder(dim: usize) -> Result<(Arc<dyn EmbeddingProvider>, String)> {
+        let model = env_any(&["MEMORICAI_EMBEDDING_MODEL"])
+            .unwrap_or_else(|| "nomic-embed-text-v1.5".into());
+        let cache_dir = env_any(&["MEMORICAI_MODEL_CACHE_DIR"])
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::var("HOME")
+                    .map(|home| std::path::PathBuf::from(home).join(".cache/memoricai/models"))
+                    .unwrap_or_else(|_| std::path::PathBuf::from("./memoricai-models"))
+            });
+        tracing::info!(%model, cache = %cache_dir.display(), "loading local embedding model");
+        let embedder = local::LocalEmbedder::new(&model, cache_dir)?;
+        if env_any(&["MEMORICAI_EMBEDDING_DIM"]).is_some() && dim != embedder.dim() {
+            return Err(Error::Model(format!(
+                "MEMORICAI_EMBEDDING_DIM={dim} does not match local model {model:?} ({}d)",
+                embedder.dim()
+            )));
+        }
+        let label = embedder.label().to_string();
+        Ok((Arc::new(embedder), label))
+    }
+
+    #[cfg(not(feature = "local-embeddings"))]
+    fn local_embedder(_dim: usize) -> Result<(Arc<dyn EmbeddingProvider>, String)> {
+        Err(Error::Model(
+            "MEMORICAI_EMBEDDING_PROVIDER=local requires a binary built with \
+             --features local-embeddings"
+                .into(),
+        ))
     }
 }

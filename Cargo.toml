@@ -47,6 +47,9 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 # http client (rustls to avoid native-tls build issues)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream", "http2"] }
 
+# local embeddings (optional feature)
+fastembed = "5"
+
 # errors / logging
 thiserror = "2"
 anyhow = "1"

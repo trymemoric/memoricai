@@ -143,6 +143,10 @@ export MEMORICAI_EMBEDDING_MODEL=text-embedding-3-small
 export MEMORICAI_EMBEDDING_DIM=1536
 export OPENAI_API_KEY=sk-...
 
+# In-process embeddings, no API needed (build with --features local-embeddings)
+export MEMORICAI_EMBEDDING_PROVIDER=local
+export MEMORICAI_EMBEDDING_MODEL=nomic-embed-text-v1.5-q   # or nomic-embed-text-v1.5, bge-small-en-v1.5, all-minilm-l6-v2
+
 # Ollama (fully local)
 export MEMORICAI_LLM_BASE_URL=http://localhost:11434/v1
 export MEMORICAI_LLM_MODEL=llama3.1

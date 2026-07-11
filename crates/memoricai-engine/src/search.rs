@@ -85,7 +85,9 @@ impl Engine {
         let embeddings = if queries.is_empty() {
             Vec::new()
         } else {
-            self.models.embedder.embed_batch(&queries).await?
+            // Query-side embedding: asymmetric local models apply their
+            // query task prefix here (no-op for symmetric providers).
+            self.models.embedder.embed_query_batch(&queries).await?
         };
         crate::validate_embedding_batch(&queries, &embeddings, self.models.dim())?;
         match cached {
@@ -655,7 +657,13 @@ impl Engine {
                 "maxForget must be between 1 and 1000".into(),
             ));
         }
-        let qvec = self.models.embedder.embed(&req.query).await?;
+        let qvec = self
+            .models
+            .embedder
+            .embed_query_batch(std::slice::from_ref(&req.query))
+            .await?
+            .pop()
+            .ok_or_else(|| Error::Model("empty embedding response".into()))?;
         crate::validate_embedding(&qvec, self.models.dim())?;
         let hits = self
             .db

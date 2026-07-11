@@ -26,6 +26,11 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 
+[features]
+# In-process embedding generation via fastembed (ONNX). Off by default to
+# keep the standard binary slim; enable with --features local-embeddings.
+local-embeddings = ["memoricai-models/local-embeddings"]
+
 [dev-dependencies]
 serde_json = { workspace = true }
 

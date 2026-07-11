@@ -61,6 +61,12 @@ pub trait EmbeddingProvider: Send + Sync {
         v.pop()
             .ok_or_else(|| crate::error::Error::Model("empty embedding response".into()))
     }
+    /// Embed search queries. Asymmetric retrieval models (nomic, bge, arctic…)
+    /// use a different task prefix for queries than for stored passages;
+    /// symmetric providers fall back to `embed_batch`.
+    async fn embed_query_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.embed_batch(texts).await
+    }
 }
 
 /// A cross-encoder reranker. Returns one score per passage (higher = better).
