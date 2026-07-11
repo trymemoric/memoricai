@@ -68,7 +68,7 @@ client.search_memories(q, *, container_tag=None, search_mode="hybrid",
                        include=None) -> dict             # POST /v1/search
 ```
 
-`search_memories(..., digest=True)` adds `"digest"` to the response — the
+`search_memories(..., digest=True)` adds `"digest"` to the response, the
 compact, date-stamped context block described in the [API docs](api.md#post-v1search).
 `include` takes the raw API shape, e.g.
 `{"documents": True, "relatedMemories": True}`.
@@ -96,7 +96,7 @@ client.forget_matching(container_tag, query, *, threshold=0.8,
 ```
 
 Note: `forget_matching` defaults to `dry_run=True` **client-side** (safer than
-the server default of `false`) — pass `dry_run=False` to actually forget.
+the server default of `false`), pass `dry_run=False` to actually forget.
 
 ### Misc
 

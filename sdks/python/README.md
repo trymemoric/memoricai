@@ -1,4 +1,4 @@
-# memoricai — Python SDK
+# memoricai Python SDK
 
 Stdlib-only client for the memoricai `/v1` HTTP API (Python 3.9+).
 

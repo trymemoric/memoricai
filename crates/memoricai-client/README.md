@@ -1,6 +1,6 @@
 # memoricai-client
 
-Rust SDK for [memoricai](https://github.com/skundu42/memoricai) — a self-hostable
+Rust SDK for [memoricai](https://github.com/skundu42/memoricai), a self-hostable
 memory & context engine for AI agents (one Rust binary + Postgres/pgvector).
 
 ```rust
@@ -29,4 +29,4 @@ println!("{}", res.digest.unwrap_or_default());
 Covers the full `/v1` API: documents (add/get/list/delete/search), memory-graph
 search with the `digest` context mode, profiles, and direct memory management
 (create/patch/forget/bulk-forget). Request/response types are re-exported from
-`memoricai-core` — the same definitions the server compiles against.
+`memoricai-core`, the same definitions the server compiles against.

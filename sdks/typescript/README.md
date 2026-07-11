@@ -1,6 +1,6 @@
-# memoricai — TypeScript SDK
+# memoricai TypeScript SDK
 
-Zero-dependency client for the memoricai `/v1` HTTP API (Node 18+ / Bun / Deno — anything with global `fetch`).
+Zero-dependency client for the memoricai `/v1` HTTP API (Node 18+ / Bun / Deno, anything with global `fetch`).
 
 ```ts
 import { MemoricaiClient } from "@memoricai/sdk";

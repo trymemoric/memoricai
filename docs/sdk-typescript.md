@@ -1,7 +1,7 @@
 # TypeScript SDK (`@memoricai/sdk`)
 
 Zero-dependency client for the [`/v1` HTTP API](api.md), built on the global
-`fetch` — works on Node 18+, Bun, Deno, and edge runtimes. Fully typed request
+`fetch`, works on Node 18+, Bun, Deno, and edge runtimes. Fully typed request
 and response interfaces; ESM.
 
 ```bash
@@ -71,8 +71,7 @@ profile(req: { containerTag; q?; threshold?; include?; buckets? }): Promise<Prof
 
 `MemorySearchRequest`: `q` (required), `containerTag`,
 `searchMode?: "memories" | "hybrid" | "documents"`, `limit`, `threshold`,
-`rerank`, `rewriteQuery`, `filters`, `include`, and **`digest?: boolean`** —
-when true the response carries `digest`, the compact date-stamped context block
+`rerank`, `rewriteQuery`, `filters`, `include`, and **`digest?: boolean`**, when true the response carries `digest`, the compact date-stamped context block
 (see the [API docs](api.md#post-v1search)).
 
 ### Memories

@@ -1,7 +1,7 @@
 # Rust SDK (`memoricai-client`)
 
 Async client for the [`/v1` HTTP API](api.md), built on `reqwest`. Request and
-response types are re-exported from `memoricai-core` — the same definitions the
+response types are re-exported from `memoricai-core`, the same definitions the
 server compiles against, so the SDK can never drift from the wire format.
 
 ```toml
@@ -43,8 +43,8 @@ async fn main() -> Result<(), memoricai_client::ClientError> {
 let client = Client::new(base_url, api_key);
 ```
 
-- `base_url` — e.g. `http://localhost:6767` (trailing slashes are trimmed).
-- `api_key` — an `mc_...` organization or container-scoped key.
+- `base_url`, e.g. `http://localhost:6767` (trailing slashes are trimmed).
+- `api_key`, an `mc_...` organization or container-scoped key.
 - Requests share a pooled HTTP client with a 120 s timeout. `Client` is `Clone`
   (cheap; the pool is shared).
 
@@ -102,7 +102,7 @@ context block (`response.digest`).
 
 ### Misc
 
-`health() -> serde_json::Value` — `GET /health` (no auth needed server-side,
+`health() -> serde_json::Value`, `GET /health` (no auth needed server-side,
 but the SDK sends the key regardless).
 
 ## Integration test

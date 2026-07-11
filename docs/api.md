@@ -2,7 +2,7 @@
 
 Base URL: wherever `memoricai serve` listens (default `http://localhost:6767`). All request/response bodies are JSON in camelCase. Request bodies are capped at 12 MiB.
 
-SDKs wrap this API 1:1 — see [sdk-rust.md](sdk-rust.md), [sdk-python.md](sdk-python.md), [sdk-typescript.md](sdk-typescript.md).
+SDKs wrap this API 1:1, see [sdk-rust.md](sdk-rust.md), [sdk-python.md](sdk-python.md), [sdk-typescript.md](sdk-typescript.md).
 
 ## Authentication
 
@@ -44,7 +44,7 @@ Non-2xx responses carry a stable envelope:
 
 ## Container tags
 
-All content is partitioned by **container tag** (`^[a-zA-Z0-9_:\-.]+$`, 1–100 chars) — one tag per project/end-user, e.g. `mc_project_default`, `user_42`. Search never crosses tags unless you pass several.
+All content is partitioned by **container tag** (`^[a-zA-Z0-9_:\-.]+$`, 1-100 chars), one tag per project/end-user, e.g. `mc_project_default`, `user_42`. Search never crosses tags unless you pass several.
 
 ## Metadata filters
 
@@ -68,7 +68,7 @@ Leaf fields: `key`, `value`, `filterType` (`string_equal` | `string_contains` | 
 
 Content is accepted instantly and processed asynchronously: `queued → extracting → chunking → embedding → indexing → done | failed`. Poll `GET /v1/documents/{id}` for status.
 
-### `POST /v1/documents` — ingest
+### `POST /v1/documents`, ingest
 
 ```json
 {
@@ -87,15 +87,15 @@ Content is accepted instantly and processed asynchronously: `queued → extracti
 
 Response `200`: `{ "id": "doc_…", "status": "queued" }`
 
-### `POST /v1/documents/batch` — batch ingest
+### `POST /v1/documents/batch`, batch ingest
 
 `{ "documents": [ <ingest body>… ], "containerTag": …, "entityContext": …, "metadata": … }` (per-item fields win). Response: `{ "results": [{ "id", "status", "error?" }…], "success": n, "failed": n }`
 
-### `POST /v1/documents/file` — file upload
+### `POST /v1/documents/file`, file upload
 
 `multipart/form-data` with the file part (+ optional `containerTag` field). PDFs, images (with a vision model configured), and audio/video (with a transcriber) are extracted server-side.
 
-### `GET /v1/documents` / `POST /v1/documents/list` — list
+### `GET /v1/documents` / `POST /v1/documents/list`, list
 
 POST body: `{ "page": 1, "limit": 20, "containerTags": ["…"], "sort": "createdAt", "order": "desc", "status": "done" }`.
 Response: `{ "memories": [Document…], "pagination": { "currentPage", "limit", "totalItems", "totalPages" } }`
@@ -104,9 +104,9 @@ Response: `{ "memories": [Document…], "pagination": { "currentPage", "limit", 
 
 Get returns the full document including `content`, `status`, `metadata`, `containerTags`, timestamps. PATCH accepts ingest-shaped fields and reprocesses. DELETE removes the document, its chunks, and its derived memories (version chains repair themselves: a superseded predecessor becomes latest again). `{id}` may be the internal id or a `customId`.
 
-### `GET /v1/documents/processing` — documents not yet `done` · `DELETE /v1/documents/bulk` — bulk delete
+### `GET /v1/documents/processing`, documents not yet `done` · `DELETE /v1/documents/bulk`, bulk delete
 
-### `POST /v1/documents/search` — chunk-level RAG
+### `POST /v1/documents/search`, chunk-level RAG
 
 ```json
 {
@@ -125,7 +125,7 @@ Get returns the full document including `content`, `status`, `metadata`, `contai
 }
 ```
 
-- `q`: 1–4096 bytes. `limit`: 1–100.
+- `q`: 1-4096 bytes. `limit`: 1-100.
 - Thresholds are cosine-similarity floors in `[0,1]` (chunk-level and best-chunk-per-document).
 - `docId` restricts the search to one document.
 - `includeFullDocs` adds each result's full `content`; `includeSummary` adds its stored summary.
@@ -156,10 +156,10 @@ A `GET /v1/documents/search?q=…&limit=…` variant exists with defaults for ev
 }
 ```
 
-- `searchMode`: `memories` (extracted facts only), `hybrid` (facts, backfilled with document chunks when results are scarce — the default), `documents` (chunks only).
+- `searchMode`: `memories` (extracted facts only), `hybrid` (facts, backfilled with document chunks when results are scarce, the default), `documents` (chunks only).
 - Only the **latest version** of each memory is searchable; superseded and forgotten memories are excluded (set `include.forgottenMemories` to search forgotten ones).
 - `include.relatedMemories` attaches version-graph context (parents/children); `include.documents` attaches the source document.
-- **`digest: true`** additionally returns a compact, ready-to-inject context block: the top matching facts grouped by source session/document, date-stamped (using the document's `date` metadata when present and each fact's extracted `eventDate`), latest versions only, ~4k-char budget. Aggregation-shaped queries (“how many…”, “list all…”) automatically widen the digest (up to 200 memories, 8k chars) because completeness beats top-k relevance for counting. Composition is deterministic — no model calls.
+- **`digest: true`** additionally returns a compact, ready-to-inject context block: the top matching facts grouped by source session/document, date-stamped (using the document's `date` metadata when present and each fact's extracted `eventDate`), latest versions only, ~4k-char budget. Aggregation-shaped queries (“how many…”, “list all…”) automatically widen the digest (up to 200 memories, 8k chars) because completeness beats top-k relevance for counting. Composition is deterministic, no model calls.
 
 Response: `{ "results": [{ "id", "memory?", "chunk?", "similarity", "metadata", "updatedAt", "version", "rootMemoryId?", "context?", "documents?" }], "timing": <ms>, "total": n, "digest?": "…" }`
 
@@ -171,25 +171,25 @@ Response: `{ "results": [{ "id", "memory?", "chunk?", "similarity", "metadata", 
 
 `{ "containerTag": "…", "q?": "…", "threshold?": 0.5, "filters?": …, "include?": ["static","dynamic","buckets"], "buckets?": ["health"] }`
 
-Returns the container's auto-maintained profile — `static` (identity facts and lasting preferences), `dynamic` (recent facts + periodic `[Summary]` aggregations), `buckets` (topical groupings) — from a fast path with no model calls. Passing `q` additionally runs a hybrid memory search and returns it as `searchResults`.
+Returns the container's auto-maintained profile, `static` (identity facts and lasting preferences), `dynamic` (recent facts + periodic `[Summary]` aggregations), `buckets` (topical groupings), from a fast path with no model calls. Passing `q` additionally runs a hybrid memory search and returns it as `searchResults`.
 
 ---
 
 ## Memories (direct management)
 
-### `POST /v1/memories` — create without extraction
+### `POST /v1/memories`, create without extraction
 
 `{ "containerTag": "…", "memories": [{ "content": "Prefers dark mode.", "isStatic": true, "metadata?": {…} }] }` → `{ "memories": [{ id, … }] }`
 
-### `PATCH /v1/memories` — versioned update
+### `PATCH /v1/memories`, versioned update
 
-`{ "id": "mem_…", "newContent": "…", "metadata?": {…} }` — appends a new version (old one retires but remains in history), returns the new `Memory`.
+`{ "id": "mem_…", "newContent": "…", "metadata?": {…} }`, appends a new version (old one retires but remains in history), returns the new `Memory`.
 
-### `DELETE /v1/memories` — forget one
+### `DELETE /v1/memories`, forget one
 
-`{ "containerTag": "…", "id?": "mem_…", "content?": "exact content", "reason?": "…" }` — exactly one of `id`/`content`. Soft-delete: excluded from search, retained for history.
+`{ "containerTag": "…", "id?": "mem_…", "content?": "exact content", "reason?": "…" }`, exactly one of `id`/`content`. Soft-delete: excluded from search, retained for history.
 
-### `POST /v1/memories/forget-matching` — semantic bulk forget
+### `POST /v1/memories/forget-matching`, semantic bulk forget
 
 `{ "containerTag": "…", "query": "…", "threshold": 0.5, "maxForget": 100, "dryRun": false, "reason?": "…" }`
 With `dryRun: true` returns the candidates without forgetting. Response: `{ "dryRun", "count", "forgetBatchId?", "summary", "candidates?", "forgotten?" }`
@@ -200,7 +200,7 @@ With `dryRun: true` returns the candidates without forgetting. Response: `{ "dry
 
 - `GET /v1/projects` / `POST /v1/projects` (`{ "name", "emoji?" }`) / `DELETE /v1/projects/{id}`
 - `GET|POST /v1/container-tags/list`, `PATCH|DELETE /v1/container-tags/{tag}`
-- `GET /v1/container-tags/{tag}/inferred` + `POST /v1/container-tags/{tag}/inferred/{memoryId}/review` — list and approve/reject inferred memories
+- `GET /v1/container-tags/{tag}/inferred` + `POST /v1/container-tags/{tag}/inferred/{memoryId}/review`, list and approve/reject inferred memories
 
 ## Settings
 
@@ -216,16 +216,16 @@ PATCH fields (all optional): `shouldLlmFilter`, `filterPrompt`, `categories`, `i
 
 ## Analytics
 
-`GET /v1/analytics/{usage,errors,logs,memory,chat}?period=&page=&limit=` — `period`: `24h`, `7d`, `30d` (default), `90d`, `all`.
+`GET /v1/analytics/{usage,errors,logs,memory,chat}?period=&page=&limit=`, `period`: `24h`, `7d`, `30d` (default), `90d`, `all`.
 
 ## Memory Router (LLM proxy)
 
-`POST /v1/router/{*target}` — OpenAI-compatible proxy that injects relevant memories into chat requests before forwarding. Headers: `Authorization` carries the **upstream** provider key, `x-memoricai-api-key` the memoricai key, optional `x-mc-project` selects the container. Upstream origins must be HTTPS or allowlisted via `MEMORICAI_ROUTER_ALLOWED_ORIGINS`.
+`POST /v1/router/{*target}`, OpenAI-compatible proxy that injects relevant memories into chat requests before forwarding. Headers: `Authorization` carries the **upstream** provider key, `x-memoricai-api-key` the memoricai key, optional `x-mc-project` selects the container. Upstream origins must be HTTPS or allowlisted via `MEMORICAI_ROUTER_ALLOWED_ORIGINS`.
 
 ## Misc
 
 - `GET /health` → `{ "service", "status", "version" }` (no auth)
 - `GET /v1/openapi` → machine-readable endpoint summary
-- `POST /mcp` — MCP Streamable-HTTP server (see README → MCP server)
+- `POST /mcp`, MCP Streamable-HTTP server (see README → MCP server)
 - OAuth2/OIDC: `/api/auth/oauth2/{authorize,consent,token,register}` + `/.well-known/{oauth-authorization-server,openid-configuration}`
 - Connections (data connectors): `GET|POST /v1/connections`, `POST /v1/connections/{id}/import`, `GET /v1/connections/{id}/{sync-runs,resources}`, provider OAuth callbacks and webhooks
