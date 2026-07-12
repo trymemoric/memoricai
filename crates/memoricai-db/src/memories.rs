@@ -214,6 +214,11 @@ impl Db {
                WHERE org_id = $2
                  AND ($3::text IS NULL OR space_container_tag = $3)
                  AND is_latest
+                 -- Only surface memories whose source document is fully indexed, so a
+                 -- partially-rebuilt (failed / in-progress) reindex is never searchable.
+                 AND (document_id IS NULL
+                      OR EXISTS (SELECT 1 FROM documents d
+                                 WHERE d.id = memories.document_id AND d.status = 'done'))
                  AND ($6 OR NOT is_forgotten)
                  AND embedding IS NOT NULL
                  AND 1 - (embedding <=> $1::vector) >= $4

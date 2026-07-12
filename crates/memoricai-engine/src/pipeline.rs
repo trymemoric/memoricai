@@ -6,8 +6,9 @@ use memoricai_core::enums::DocumentStatus;
 use memoricai_core::error::Result;
 
 impl Engine {
-    /// Advance a queued document through all pipeline stages.
-    pub async fn process_document(&self, doc_id: &str) -> Result<()> {
+    /// Advance a queued document through all pipeline stages. All status/lease writes are
+    /// fenced by `lease_token`, so a stale worker whose lease was reclaimed aborts.
+    pub async fn process_document(&self, doc_id: &str, lease_token: &str) -> Result<()> {
         let doc = self.db.get_document_by_id(doc_id).await?;
         let org_id = doc.org_id.clone();
         let settings = self.db.get_settings(&org_id).await?;
@@ -20,14 +21,14 @@ impl Engine {
 
         // --- extract ---
         self.db
-            .update_document_status(doc_id, DocumentStatus::Extracting)
+            .update_document_status(doc_id, lease_token, DocumentStatus::Extracting)
             .await?;
         let extracted = extract::extract(&doc.doc_type, content, doc.url.as_deref()).await?;
         let text = extracted.text;
 
         // --- chunk ---
         self.db
-            .update_document_status(doc_id, DocumentStatus::Chunking)
+            .update_document_status(doc_id, lease_token, DocumentStatus::Chunking)
             .await?;
         let chunk_chars = usize::try_from(settings.chunk_size)
             .ok()
@@ -37,7 +38,7 @@ impl Engine {
 
         // --- embed chunks and prepare memories before replacing the live index ---
         self.db
-            .update_document_status(doc_id, DocumentStatus::Embedding)
+            .update_document_status(doc_id, lease_token, DocumentStatus::Embedding)
             .await?;
         let chunk_count = pieces.len();
         let drafts = if !pieces.is_empty() {
@@ -73,7 +74,7 @@ impl Engine {
 
         // --- atomically replace chunks, then rebuild the document's memory graph ---
         self.db
-            .update_document_status(doc_id, DocumentStatus::Indexing)
+            .update_document_status(doc_id, lease_token, DocumentStatus::Indexing)
             .await?;
         self.db
             .replace_chunks_for_document(doc_id, &org_id, &tags, &drafts)
@@ -99,6 +100,7 @@ impl Engine {
         self.db
             .finish_document(
                 doc_id,
+                lease_token,
                 summary.as_deref(),
                 Some(token_count),
                 chunk_count as i64,

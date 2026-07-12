@@ -47,6 +47,21 @@ pub enum ClientError {
 
 pub type Result<T> = std::result::Result<T, ClientError>;
 
+/// Percent-encode a single URL path segment (RFC 3986 unreserved set stays literal),
+/// so a `customId` containing `/`, `?`, `#`, etc. does not break the request path.
+fn encode_path_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// Client for a memoricai server's `/v1` API.
 #[derive(Clone)]
 pub struct Client {
@@ -82,27 +97,39 @@ impl Client {
         path: &str,
         body: Option<&B>,
     ) -> Result<R> {
-        let mut req = self
-            .http
-            .request(method, format!("{}{}", self.base_url, path))
-            .bearer_auth(&self.api_key);
-        if let Some(b) = body {
-            req = req.json(b);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
+        let url = format!("{}{}", self.base_url, path);
+        const MAX_RETRIES: u32 = 4;
+        for attempt in 0..=MAX_RETRIES {
+            let mut req = self
+                .http
+                .request(method.clone(), url.as_str())
+                .bearer_auth(&self.api_key);
+            if let Some(b) = body {
+                req = req.json(b);
+            }
+            let resp = req.send().await?;
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(resp.json().await?);
+            }
+            let code = status.as_u16();
+            // Retry transient failures (429/5xx) with exponential backoff, matching the
+            // Python and TypeScript clients.
+            if matches!(code, 429 | 500 | 502 | 503) && attempt < MAX_RETRIES {
+                tokio::time::sleep(Duration::from_millis(1000u64 << attempt)).await;
+                continue;
+            }
             let text = resp.text().await.unwrap_or_default();
             let message = serde_json::from_str::<ApiErrorBody>(&text)
                 .ok()
                 .and_then(|e| e.message.or(e.error))
                 .unwrap_or(text);
             return Err(ClientError::Api {
-                status: status.as_u16(),
+                status: code,
                 message,
             });
         }
-        Ok(resp.json().await?)
+        unreachable!("retry loop always returns")
     }
 
     /// `GET /health`.
@@ -142,15 +169,19 @@ impl Client {
 
     /// `GET /v1/documents/{id}`.
     pub async fn get_document(&self, id: &str) -> Result<Document> {
-        self.request::<(), _>(reqwest::Method::GET, &format!("/v1/documents/{id}"), None)
-            .await
+        self.request::<(), _>(
+            reqwest::Method::GET,
+            &format!("/v1/documents/{}", encode_path_segment(id)),
+            None,
+        )
+        .await
     }
 
     /// `DELETE /v1/documents/{id}`.
     pub async fn delete_document(&self, id: &str) -> Result<serde_json::Value> {
         self.request::<(), _>(
             reqwest::Method::DELETE,
-            &format!("/v1/documents/{id}"),
+            &format!("/v1/documents/{}", encode_path_segment(id)),
             None,
         )
         .await
@@ -241,5 +272,24 @@ impl Client {
             Some(req),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_segment_encodes_unsafe_chars() {
+        assert_eq!(encode_path_segment("simple-id_1.2~"), "simple-id_1.2~");
+        assert_eq!(encode_path_segment("a/b"), "a%2Fb");
+        assert_eq!(encode_path_segment("q?x#y"), "q%3Fx%23y");
+        assert_eq!(encode_path_segment("a b&c"), "a%20b%26c");
+    }
+
+    #[test]
+    fn base_url_trailing_slashes_trimmed() {
+        let c = Client::new("http://localhost:7373///", "mc_test");
+        assert_eq!(c.base_url, "http://localhost:7373");
     }
 }

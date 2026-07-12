@@ -265,7 +265,11 @@ impl Connector for GitHub {
         Ok(stats)
     }
 
-    async fn handle_webhook(&self, headers: &HashMap<String, String>, body: &[u8]) -> Result<bool> {
+    async fn handle_webhook(
+        &self,
+        headers: &HashMap<String, String>,
+        body: &[u8],
+    ) -> Result<Option<String>> {
         let secret = std::env::var("MEMORICAI_GITHUB_WEBHOOK_SECRET")
             .map_err(|_| Error::BadRequest("webhook secret not configured".into()))?;
         let sig = headers
@@ -279,6 +283,12 @@ impl Connector for GitHub {
         if !constant_time_eq(expected.as_bytes(), sig.as_bytes()) {
             return Err(Error::Unauthorized("invalid webhook signature".into()));
         }
-        Ok(true)
+        // Scope the sync to the repository this event is about, so a single repo's push
+        // does not re-sync every GitHub connection in the deployment. Events without a
+        // repository (e.g. ping) trigger no sync.
+        let repo = serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|v| v["repository"]["full_name"].as_str().map(|s| s.to_string()));
+        Ok(repo)
     }
 }

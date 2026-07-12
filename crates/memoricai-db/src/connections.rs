@@ -66,6 +66,9 @@ impl Db {
         document_limit: i32,
         metadata: &Value,
     ) -> Result<()> {
+        // Encrypt sensitive metadata fields (e.g. S3 secretAccessKey, Granola apiKey) at rest.
+        let mut metadata = metadata.clone();
+        crate::crypto::encrypt_metadata(&mut metadata);
         sqlx::query(
             "INSERT INTO connections (id, provider, org_id, user_id, document_limit, container_tags, metadata)
              VALUES ($1,$2,$3,$4,$5,$6,$7)",
@@ -76,7 +79,7 @@ impl Db {
         .bind(user_id)
         .bind(document_limit)
         .bind(container_tags)
-        .bind(metadata)
+        .bind(&metadata)
         .execute(&self.pool)
         .await
         .map_err(db_err)?;
@@ -90,7 +93,10 @@ impl Db {
             .fetch_optional(&self.pool)
             .await
             .map_err(db_err)?;
-        Ok(row.as_ref().map(map_connection))
+        Ok(row.as_ref().map(map_connection).map(|mut c| {
+            crate::crypto::decrypt_metadata(&mut c.metadata);
+            c
+        }))
     }
 
     pub async fn get_connection_credentials(
@@ -105,8 +111,8 @@ impl Db {
         .await
         .map_err(db_err)?;
         Ok(row.as_ref().map(|r| ConnectionCredentials {
-            access_token: r.get("access_token"),
-            refresh_token: r.get("refresh_token"),
+            access_token: crate::crypto::decrypt_opt(r.get("access_token")),
+            refresh_token: crate::crypto::decrypt_opt(r.get("refresh_token")),
             expires_at: r.get("expires_at"),
             sync_cursor: r.get("sync_cursor"),
         }))
@@ -174,6 +180,9 @@ impl Db {
         expires_at: Option<DateTime<Utc>>,
         email: Option<&str>,
     ) -> Result<()> {
+        // Encrypt provider tokens at rest (no-op if MEMORICAI_ENCRYPTION_KEY is unset).
+        let access = crate::crypto::encrypt_opt(access);
+        let refresh = crate::crypto::encrypt_opt(refresh);
         sqlx::query(
             "UPDATE connections SET access_token = COALESCE($2, access_token),
              refresh_token = COALESCE($3, refresh_token),
@@ -181,8 +190,8 @@ impl Db {
              email = COALESCE($5, email) WHERE id = $1",
         )
         .bind(id)
-        .bind(access)
-        .bind(refresh)
+        .bind(access.as_deref())
+        .bind(refresh.as_deref())
         .bind(expires_at)
         .bind(email)
         .execute(&self.pool)
@@ -240,11 +249,18 @@ impl Db {
     }
 
     pub async fn take_connection_state(&self, token: &str) -> Result<Option<ConnState>> {
-        let row = sqlx::query("DELETE FROM connection_state WHERE state_token = $1 RETURNING *")
-            .bind(token)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db_err)?;
+        // Only consume a non-expired state; expired states must not authorize a callback.
+        // Opportunistically purge accumulated expired rows in the same round-trip.
+        let _ = sqlx::query("DELETE FROM connection_state WHERE expires_at <= now()")
+            .execute(&self.pool)
+            .await;
+        let row = sqlx::query(
+            "DELETE FROM connection_state WHERE state_token = $1 AND expires_at > now() RETURNING *",
+        )
+        .bind(token)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
         Ok(row.as_ref().map(|r| ConnState {
             state_token: r.get("state_token"),
             provider: r.get("provider"),

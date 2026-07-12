@@ -328,7 +328,11 @@ export class MemoricaiClient {
     return this.request("DELETE", "/v1/memories", req);
   }
 
-  /** POST /v1/memories/forget-matching — semantic bulk forget (dryRun defaults true server-side only when set; pass explicitly). */
+  /**
+   * POST /v1/memories/forget-matching — semantic bulk forget.
+   * `dryRun` defaults to **true** client-side (the server default is false); pass
+   * `dryRun: false` explicitly to actually delete.
+   */
   async forgetMatching(req: {
     containerTag: string;
     query: string;
@@ -337,7 +341,7 @@ export class MemoricaiClient {
     dryRun?: boolean;
     reason?: string;
   }): Promise<unknown> {
-    return this.request("POST", "/v1/memories/forget-matching", req);
+    return this.request("POST", "/v1/memories/forget-matching", { dryRun: true, ...req });
   }
 }
 

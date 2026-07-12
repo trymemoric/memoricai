@@ -326,6 +326,12 @@ impl Engine {
                 }
             }
             let mut hits: Vec<MemoryHit> = merged.into_values().collect();
+            // Apply the metadata filter BEFORE building the digest and the results, so a
+            // filter that separates users / data classes / sources excludes non-matching
+            // memories from the digest too — not just from the structured results.
+            if let Some(f) = &filter {
+                hits.retain(|hit| f.matches(&hit.memory.metadata));
+            }
             hits.sort_unstable_by(|a, b| {
                 b.similarity
                     .partial_cmp(&a.similarity)
@@ -338,11 +344,6 @@ impl Engine {
 
             for hit in hits {
                 let m = hit.memory;
-                if let Some(f) = &filter {
-                    if !f.matches(&m.metadata) {
-                        continue;
-                    }
-                }
                 let context = if req.include.related_memories {
                     Some(self.memory_context(&m.id).await?)
                 } else {

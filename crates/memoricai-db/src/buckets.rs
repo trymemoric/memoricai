@@ -156,6 +156,7 @@ impl Db {
         let rows = sqlx::query(
             "SELECT * FROM memories WHERE org_id = $1 AND space_container_tag = $2
              AND is_latest AND NOT is_forgotten AND NOT is_static
+             AND aggregated_at IS NULL
              AND created_at < now() - ($3 || ' days')::interval
              ORDER BY created_at ASC LIMIT $4",
         )
@@ -167,5 +168,40 @@ impl Db {
         .await
         .map_err(db_err)?;
         Ok(rows.iter().map(map_memory).collect())
+    }
+
+    /// Mark memories as folded into a profile summary so aggregation does not re-summarize
+    /// them on every cycle.
+    pub async fn mark_memories_aggregated(&self, ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        sqlx::query("UPDATE memories SET aggregated_at = now() WHERE id = ANY($1)")
+            .bind(ids)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// The current profile summary text (for rolling aggregation), if any.
+    pub async fn get_profile_summary(
+        &self,
+        org_id: &str,
+        container_tag: &str,
+        bucket_key: Option<&str>,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            "SELECT summary FROM profile_summaries
+             WHERE org_id = $1 AND container_tag = $2
+               AND coalesce(bucket_key,'') = coalesce($3,'')",
+        )
+        .bind(org_id)
+        .bind(container_tag)
+        .bind(bucket_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(row.map(|r| r.get("summary")))
     }
 }

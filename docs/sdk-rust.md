@@ -59,8 +59,8 @@ pub enum ClientError {
 }
 ```
 
-The SDK does **not** retry; wrap calls in your own retry policy if you need one
-(the Python and TypeScript SDKs retry 429/5xx by default).
+The SDK retries transient failures (429/5xx) up to 4 times with exponential
+backoff, matching the Python and TypeScript SDKs.
 
 ## Methods
 

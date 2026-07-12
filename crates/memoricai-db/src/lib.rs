@@ -7,6 +7,7 @@ pub mod analytics;
 pub mod auth;
 pub mod buckets;
 pub mod connections;
+pub mod crypto;
 pub mod documents;
 pub mod memories;
 pub mod oauth;
@@ -36,6 +37,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0004_event_dates",
         include_str!("../migrations/0004_event_dates.sql"),
+    ),
+    (
+        "0005_lease_fence_and_aggregation",
+        include_str!("../migrations/0005_lease_fence_and_aggregation.sql"),
     ),
 ];
 
