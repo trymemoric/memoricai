@@ -27,6 +27,8 @@ pub struct AppState {
     pub request_body_timeout: std::time::Duration,
     /// Exact upstream origins permitted for the Memory Router. Empty = public HTTPS only.
     pub router_allowed_origins: Arc<Vec<String>>,
+    /// Master credential for `POST /v1/admin/provision`. `None` = endpoint disabled (404).
+    pub provision_key: Option<Arc<str>>,
 }
 
 /// Error wrapper mapping [`memoricai_core::Error`] to an HTTP JSON error response.
@@ -284,6 +286,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::oauth::routes())
         .merge(routes::connections::routes())
         .merge(routes::router::routes())
+        .merge(routes::admin::routes())
         .layer(DefaultBodyLimit::max(12 * 1024 * 1024))
         .layer(tower_http::timeout::RequestBodyTimeoutLayer::new(
             request_body_timeout,

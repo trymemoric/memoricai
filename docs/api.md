@@ -228,3 +228,30 @@ PATCH fields (all optional): `shouldLlmFilter`, `filterPrompt`, `categories`, `i
 - `POST /mcp`, MCP Streamable-HTTP server (see README → MCP server)
 - OAuth2/OIDC: `/api/auth/oauth2/{authorize,consent,token,register}` + `/.well-known/{oauth-authorization-server,openid-configuration}`
 - Connections (data connectors): `GET|POST /v1/connections`, `POST /v1/connections/{id}/import`, `GET /v1/connections/{id}/{sync-runs,resources}`, provider OAuth callbacks and webhooks
+
+## Admin (provisioning)
+
+`POST /v1/admin/provision` creates an isolated organization (+ owner user + org API key) in one call — meant for a control plane to invoke once per customer signup, not for end users.
+
+Disabled by default: unless `MEMORICAI_PROVISION_KEY` is set, the route returns a plain **404** (it hides its existence rather than advertising that it needs auth).
+
+Auth: `Authorization: Bearer <MEMORICAI_PROVISION_KEY>` (compared in constant time; not a `mc_...` API key, and the regular `Auth` extractor is not used for this route).
+
+```json
+// request
+{ "orgName": "Acme Inc", "email": "owner@acme.com" }
+```
+
+```json
+// 201 response
+{
+  "orgId": "org_…",
+  "orgName": "Acme Inc",
+  "userId": "user_…",
+  "apiKey": "mc_…"
+}
+```
+
+`apiKey` is the plaintext full-access org key, shown once — store it immediately.
+
+**Production warning:** this endpoint mints unrestricted org credentials for anyone holding the master key. Network-restrict `/v1/admin` (reverse proxy / firewall rule) to trusted control-plane callers only; do not expose it publicly.

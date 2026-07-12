@@ -68,6 +68,7 @@ sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
 argon2 = "0.5"
+subtle = "2"
 moka = { version = "0.12", features = ["future"] }
 sysinfo = "0.32"
 clap = { version = "4", features = ["derive", "env"] }

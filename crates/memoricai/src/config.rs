@@ -9,6 +9,8 @@ pub struct Config {
     pub request_body_timeout: std::time::Duration,
     pub analytics_retention_days: i64,
     pub router_allowed_origins: Vec<String>,
+    /// Master credential for `POST /v1/admin/provision`. Unset = endpoint disabled (404).
+    pub provision_key: Option<String>,
 }
 
 fn env_any(keys: &[&str]) -> Option<String> {
@@ -86,6 +88,7 @@ impl Config {
                     .collect()
             })
             .unwrap_or_default();
+        let provision_key = env_any(&["MEMORICAI_PROVISION_KEY"]);
         Ok(Self {
             database_url,
             bind,
@@ -95,6 +98,7 @@ impl Config {
             request_body_timeout,
             analytics_retention_days,
             router_allowed_origins,
+            provision_key,
         })
     }
 }
