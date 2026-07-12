@@ -38,9 +38,18 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status =
             StatusCode::from_u16(self.0.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        // Never leak internal DB / upstream-provider detail to clients: for 5xx faults,
+        // log the real error server-side under a request id and return a generic message.
+        let message = if status.is_server_error() {
+            let request_id = memoricai_core::ids::request_id();
+            tracing::error!(request_id, error = %self.0, "request failed");
+            format!("internal error (request id: {request_id})")
+        } else {
+            self.0.to_string()
+        };
         let body = Json(serde_json::json!({
             "error": self.0.code(),
-            "message": self.0.to_string(),
+            "message": message,
         }));
         let mut resp = (status, body).into_response();
         if status == StatusCode::UNAUTHORIZED {
@@ -87,8 +96,61 @@ impl FromRequestParts<AppState> for Auth {
         state
             .auth
             .authorize_request(&ctx, parts.method.as_str(), parts.uri.path())?;
+        if let Some(slot) = parts.extensions.get::<RequestLog>() {
+            *slot.0.lock().unwrap() = Some((
+                ctx.org.id.clone(),
+                Some(ctx.user.id.clone()),
+                Some(ctx.key_id.clone()),
+            ));
+        }
         Ok(Auth(ctx))
     }
+}
+
+/// Resolved identity captured for one request: `(org_id, user_id, key_id)`.
+type RequestIdentity = (String, Option<String>, Option<String>);
+
+/// Per-request slot the [`Auth`] extractor fills with the resolved identity so the
+/// access-log middleware can attribute the request in `api_requests`.
+#[derive(Clone, Default)]
+struct RequestLog(std::sync::Arc<std::sync::Mutex<Option<RequestIdentity>>>);
+
+/// Records every request (coarse path category, status, duration, and — when
+/// authenticated — org/user/key) so analytics is not limited to Memory Router calls.
+async fn access_log(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let start = std::time::Instant::now();
+    let path = req.uri().path().to_string();
+    let slot = RequestLog::default();
+    req.extensions_mut().insert(slot.clone());
+    let resp = next.run(req).await;
+    let status = resp.status().as_u16() as i32;
+    let duration = start.elapsed().as_millis() as i64;
+    if let Some((org, user, key)) = slot.0.lock().unwrap().take() {
+        let req_type = path
+            .trim_start_matches('/')
+            .split('/')
+            .nth(1)
+            .unwrap_or("api")
+            .to_string();
+        let db = state.engine.db.clone();
+        tokio::spawn(async move {
+            let _ = db
+                .log_request(
+                    &req_type,
+                    &org,
+                    user.as_deref(),
+                    key.as_deref(),
+                    status,
+                    duration,
+                )
+                .await;
+        });
+    }
+    resp
 }
 
 /// Read the optional `x-mc-project` header (roots a connection to one container tag).
@@ -172,5 +234,9 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::connections::routes())
         .merge(routes::router::routes())
         .layer(DefaultBodyLimit::max(12 * 1024 * 1024))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            access_log,
+        ))
         .with_state(state)
 }

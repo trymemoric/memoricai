@@ -168,8 +168,8 @@ impl Engine {
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             while let Ok(permit) = self.sem.clone().try_acquire_owned() {
-                let doc_id = match self.db.claim_next_document().await {
-                    Ok(Some(doc_id)) => doc_id,
+                let (doc_id, lease_token) = match self.db.claim_next_document().await {
+                    Ok(Some(pair)) => pair,
                     Ok(None) => {
                         drop(permit);
                         break;
@@ -184,6 +184,7 @@ impl Engine {
                 tokio::spawn(async move {
                     let heartbeat_engine = engine.clone();
                     let heartbeat_doc_id = doc_id.clone();
+                    let heartbeat_token = lease_token.clone();
                     let heartbeat = tokio::spawn(async move {
                         let mut interval =
                             tokio::time::interval(std::time::Duration::from_secs(60));
@@ -192,10 +193,10 @@ impl Engine {
                             interval.tick().await;
                             // A single transient renewal error (e.g. momentary pool
                             // exhaustion) must not silence the heartbeat for the rest of a
-                            // long stage; log and keep renewing.
+                            // long stage; log and keep renewing. Fenced by the lease token.
                             if let Err(error) = heartbeat_engine
                                 .db
-                                .renew_document_lease(&heartbeat_doc_id)
+                                .renew_document_lease(&heartbeat_doc_id, &heartbeat_token)
                                 .await
                             {
                                 tracing::warn!(doc_id = %heartbeat_doc_id, %error, "lease renewal failed");
@@ -205,13 +206,13 @@ impl Engine {
                     // Created before process_document so a panic there still aborts the
                     // heartbeat via unwind; explicitly dropped on the normal path below.
                     let heartbeat_guard = AbortOnDrop(heartbeat);
-                    let process_result = engine.process_document(&doc_id).await;
+                    let process_result = engine.process_document(&doc_id, &lease_token).await;
                     drop(heartbeat_guard);
                     if let Err(error) = process_result {
                         tracing::error!(doc_id, %error, "ingest failed");
                         let _ = engine
                             .db
-                            .mark_document_failed(&doc_id, &error.to_string())
+                            .mark_document_failed(&doc_id, &lease_token, &error.to_string())
                             .await;
                     }
                     drop(permit);

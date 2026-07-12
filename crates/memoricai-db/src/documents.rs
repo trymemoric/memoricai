@@ -100,26 +100,43 @@ impl Db {
         Ok(rows.iter().map(map_document).collect())
     }
 
-    pub async fn update_document_status(&self, id: &str, status: DocumentStatus) -> Result<()> {
-        sqlx::query(
+    /// Advance a document's status, fenced by the caller's lease token. Returns
+    /// `Error::Conflict` if the lease has been taken over by another worker, so the
+    /// stale worker aborts instead of continuing to write.
+    pub async fn update_document_status(
+        &self,
+        id: &str,
+        lease_token: &str,
+        status: DocumentStatus,
+    ) -> Result<()> {
+        let r = sqlx::query(
             "UPDATE documents SET status = $2, updated_at = now(),
              lease_until = CASE WHEN $2 IN ('extracting','chunking','embedding','indexing')
                                 THEN now() + interval '5 minutes' ELSE NULL END
-             WHERE id = $1",
+             WHERE id = $1 AND lease_token = $3",
         )
         .bind(id)
         .bind(status.as_str())
+        .bind(lease_token)
         .execute(&self.pool)
         .await
         .map_err(db_err)?;
+        if r.rows_affected() == 0 {
+            return Err(Error::Conflict(format!(
+                "lease for document {id} was taken over"
+            )));
+        }
         Ok(())
     }
 
-    /// Atomically claim one queued, retryable, or abandoned ingest job.
-    pub async fn claim_next_document(&self) -> Result<Option<String>> {
+    /// Atomically claim one queued, retryable, or abandoned ingest job, minting a fresh
+    /// lease token. Returns `(document_id, lease_token)`.
+    pub async fn claim_next_document(&self) -> Result<Option<(String, String)>> {
+        let token = memoricai_core::ids::token(16);
         let row = sqlx::query(
             "UPDATE documents SET status='extracting', processing_attempts=processing_attempts+1,
-                    lease_until=now()+interval '5 minutes', last_error=NULL, updated_at=now()
+                    lease_until=now()+interval '5 minutes', lease_token=$1,
+                    last_error=NULL, updated_at=now()
              WHERE id = (
                SELECT id FROM documents
                WHERE processing_attempts < 3 AND (
@@ -134,31 +151,40 @@ impl Db {
              )
              RETURNING id",
         )
+        .bind(&token)
         .fetch_optional(&self.pool)
         .await
         .map_err(db_err)?;
-        Ok(row.map(|row| row.get("id")))
+        Ok(row.map(|row| (row.get("id"), token)))
     }
 
-    pub async fn renew_document_lease(&self, id: &str) -> Result<()> {
+    pub async fn renew_document_lease(&self, id: &str, lease_token: &str) -> Result<()> {
         sqlx::query(
             "UPDATE documents SET lease_until=now()+interval '5 minutes'
-             WHERE id=$1 AND status IN ('extracting','chunking','embedding','indexing')",
+             WHERE id=$1 AND lease_token=$2
+               AND status IN ('extracting','chunking','embedding','indexing')",
         )
         .bind(id)
+        .bind(lease_token)
         .execute(&self.pool)
         .await
         .map_err(db_err)?;
         Ok(())
     }
 
-    pub async fn mark_document_failed(&self, id: &str, error: &str) -> Result<()> {
+    pub async fn mark_document_failed(
+        &self,
+        id: &str,
+        lease_token: &str,
+        error: &str,
+    ) -> Result<()> {
         sqlx::query(
-            "UPDATE documents SET status='failed', lease_until=NULL, last_error=$2,
-                    updated_at=now() WHERE id=$1",
+            "UPDATE documents SET status='failed', lease_until=NULL, lease_token=NULL,
+                    last_error=$2, updated_at=now() WHERE id=$1 AND lease_token=$3",
         )
         .bind(id)
         .bind(error)
+        .bind(lease_token)
         .execute(&self.pool)
         .await
         .map_err(db_err)?;
@@ -285,22 +311,29 @@ impl Db {
     pub async fn finish_document(
         &self,
         id: &str,
+        lease_token: &str,
         summary: Option<&str>,
         token_count: Option<i64>,
         chunk_count: i64,
     ) -> Result<()> {
-        sqlx::query(
+        let r = sqlx::query(
             "UPDATE documents SET status = 'done', summary = COALESCE($2, summary),
-             token_count = $3, chunk_count = $4, lease_until=NULL, last_error=NULL,
-             updated_at = now() WHERE id = $1",
+             token_count = $3, chunk_count = $4, lease_until=NULL, lease_token=NULL,
+             last_error=NULL, updated_at = now() WHERE id = $1 AND lease_token = $5",
         )
         .bind(id)
         .bind(summary)
         .bind(token_count)
         .bind(chunk_count)
+        .bind(lease_token)
         .execute(&self.pool)
         .await
         .map_err(db_err)?;
+        if r.rows_affected() == 0 {
+            return Err(Error::Conflict(format!(
+                "lease for document {id} was taken over"
+            )));
+        }
         Ok(())
     }
 
@@ -617,6 +650,9 @@ impl Db {
                FROM chunks c
                JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id
                WHERE c.org_id = $2
+                 -- Only surface chunks of fully-indexed documents (a failed / in-progress
+                 -- reindex must not appear in results).
+                 AND d.status = 'done'
                  AND ($3::text[] IS NULL OR c.space_container_tag = ANY($3))
                  AND ($4::text IS NULL OR c.document_id = $4)
                  AND c.embedding IS NOT NULL

@@ -199,9 +199,40 @@ impl Db {
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
+            // Drop source memories that already have an equivalent copy under the target
+            // tag (document shared by both projects) before re-tagging, else the move
+            // duplicates them under the target.
+            sqlx::query(
+                "DELETE FROM memories m
+                 WHERE m.org_id = $1 AND m.space_container_tag = $2
+                   AND EXISTS (SELECT 1 FROM memories t
+                               WHERE t.org_id = $1 AND t.space_container_tag = $3
+                                 AND t.memory = m.memory
+                                 AND t.document_id IS NOT DISTINCT FROM m.document_id)",
+            )
+            .bind(org_id)
+            .bind(tag)
+            .bind(target)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
             let m = sqlx::query(
                 "UPDATE memories SET space_container_tag = $3, updated_at = now()
                  WHERE org_id = $1 AND space_container_tag = $2",
+            )
+            .bind(org_id)
+            .bind(tag)
+            .bind(target)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+            // Same de-duplication for chunks shared across both projects.
+            sqlx::query(
+                "DELETE FROM chunks c
+                 WHERE c.org_id = $1 AND c.space_container_tag = $2
+                   AND EXISTS (SELECT 1 FROM chunks t
+                               WHERE t.org_id = $1 AND t.space_container_tag = $3
+                                 AND t.document_id = c.document_id AND t.content = c.content)",
             )
             .bind(org_id)
             .bind(tag)

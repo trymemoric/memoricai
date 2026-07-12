@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
@@ -127,10 +128,10 @@ class Client:
     add_text = add_document
 
     def get_document(self, doc_id: str) -> dict:
-        return self._request("GET", f"/v1/documents/{doc_id}")
+        return self._request("GET", f"/v1/documents/{urllib.parse.quote(doc_id, safe='')}")
 
     def delete_document(self, doc_id: str) -> Any:
-        return self._request("DELETE", f"/v1/documents/{doc_id}")
+        return self._request("DELETE", f"/v1/documents/{urllib.parse.quote(doc_id, safe='')}")
 
     def list_documents(
         self,

@@ -183,7 +183,9 @@ pub async fn upload_file(
     let mut req = IngestRequest {
         content,
         custom_id: None,
-        container_tag: tags.first().cloned(),
+        // Leave the singular tag unset so ALL uploaded container tags flow through
+        // (resolved_container_tags prefers the singular and would otherwise drop the rest).
+        container_tag: None,
         container_tags: if tags.is_empty() { None } else { Some(tags) },
         metadata: Some(metadata),
         entity_context: None,

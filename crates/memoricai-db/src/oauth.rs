@@ -107,6 +107,17 @@ impl Db {
         Ok(())
     }
 
+    /// Count dynamically-registered (non-first-party) OAuth clients, to cap unbounded
+    /// growth from the public registration endpoint.
+    pub async fn count_dynamic_oauth_clients(&self) -> Result<i64> {
+        let c: i64 = sqlx::query("SELECT count(*) AS c FROM oauth_clients WHERE NOT first_party")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db_err)?
+            .get("c");
+        Ok(c)
+    }
+
     pub async fn get_oauth_client(&self, id: &str) -> Result<Option<OAuthClient>> {
         let row = sqlx::query("SELECT * FROM oauth_clients WHERE id = $1")
             .bind(id)

@@ -508,10 +508,37 @@ async fn mint_token(state: &AppState, oc: &OAuthCode) -> Result<TokenResponse, A
 
 // ---------------- dynamic client registration ----------------
 
+/// Global fixed-window rate limit for the unauthenticated dynamic-registration
+/// endpoint, so it cannot be used to cheaply fill `oauth_clients`.
+fn register_rate_ok() -> bool {
+    static WINDOW: std::sync::LazyLock<std::sync::Mutex<(i64, u32)>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new((0, 0)));
+    const WINDOW_MS: i64 = 60_000;
+    const MAX_PER_WINDOW: u32 = 20;
+    let now = Utc::now().timestamp_millis();
+    let mut w = WINDOW.lock().unwrap();
+    if now - w.0 >= WINDOW_MS {
+        *w = (now, 0);
+    }
+    w.1 += 1;
+    w.1 <= MAX_PER_WINDOW
+}
+
+/// Hard ceiling on dynamically-registered clients (defence in depth vs. the rate limit).
+const MAX_DYNAMIC_OAUTH_CLIENTS: i64 = 10_000;
+
 pub async fn register(
     State(state): State<AppState>,
     Json(req): Json<RegisterClientRequest>,
 ) -> ApiResult<Json<RegisterClientResponse>> {
+    if !register_rate_ok() {
+        return Err(ApiError(Error::RateLimited));
+    }
+    if state.auth.db().count_dynamic_oauth_clients().await? >= MAX_DYNAMIC_OAUTH_CLIENTS {
+        return Err(ApiError(Error::Forbidden(
+            "dynamic client registration is at capacity".into(),
+        )));
+    }
     let auth_method = req
         .token_endpoint_auth_method
         .unwrap_or_else(|| "none".into());

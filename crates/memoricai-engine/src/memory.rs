@@ -391,10 +391,26 @@ impl Engine {
                 .map(|m| format!("- {}", m.memory))
                 .collect::<Vec<_>>()
                 .join("\n");
-            if let Ok(summary) = self.summarize_facts(&joined).await {
+            // Roll the existing summary forward so history is preserved even though only
+            // newly-aggregatable memories are summarized this cycle.
+            let existing = self
+                .db
+                .get_profile_summary(org_id, container_tag, None)
+                .await?;
+            let input = match existing {
+                Some(prev) if !prev.trim().is_empty() => {
+                    format!("Existing summary:\n{prev}\n\nAdditional facts:\n{joined}")
+                }
+                _ => joined,
+            };
+            if let Ok(summary) = self.summarize_facts(&input).await {
                 self.db
                     .upsert_profile_summary(org_id, container_tag, None, &summary)
                     .await?;
+                // Mark these memories aggregated so they are not re-summarized forever and
+                // the next cycle advances to memories beyond the first 100.
+                let ids: Vec<String> = old.iter().map(|m| m.id.clone()).collect();
+                self.db.mark_memories_aggregated(&ids).await?;
                 written += 1;
             }
         }

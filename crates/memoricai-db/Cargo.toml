@@ -12,6 +12,9 @@ sqlx = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
+aes-gcm = "0.10"
+base64 = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true

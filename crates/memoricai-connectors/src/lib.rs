@@ -122,6 +122,22 @@ impl ImportCtx<'_> {
         Ok(())
     }
 
+    /// Ingest one fetched *binary* item: extract text via the media/binary extractor
+    /// (PDF/image/audio) instead of decoding raw bytes as lossy UTF-8 text.
+    pub async fn ingest_bytes(
+        &self,
+        external_id: &str,
+        bytes: Vec<u8>,
+        filename: &str,
+        mime: &str,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<()> {
+        let (content, doc_type) = self.engine.extract_file(&bytes, filename, mime).await?;
+        self.ingest(external_id, content, &doc_type, title, tags)
+            .await
+    }
+
     pub fn token(&self) -> Result<&str> {
         self.access_token
             .as_deref()
@@ -150,13 +166,15 @@ pub trait Connector: Send + Sync {
             "configure not supported for this provider".into(),
         ))
     }
-    /// Handle a provider webhook. Returns true if a sync should be triggered.
+    /// Handle a provider webhook. Returns `None` to trigger no sync, or `Some(scope)` to
+    /// sync only connections matching `scope` (e.g. a specific repo `full_name`); an empty
+    /// scope means all of this provider's connections.
     async fn handle_webhook(
         &self,
         _headers: &HashMap<String, String>,
         _body: &[u8],
-    ) -> Result<bool> {
-        Ok(false)
+    ) -> Result<Option<String>> {
+        Ok(None)
     }
 }
 
@@ -462,11 +480,29 @@ impl Connectors {
         body: &[u8],
     ) -> Result<()> {
         let connector = connector_for(provider)?;
-        if connector.handle_webhook(headers, body).await? {
-            let due = self.engine.db.connections_due(0).await?;
-            for c in due.into_iter().filter(|c| c.provider == provider) {
-                let _ = self.import(&c.org_id, &c.id, "event").await;
+        let Some(scope) = connector.handle_webhook(headers, body).await? else {
+            return Ok(());
+        };
+        let due = self.engine.db.connections_due(0).await?;
+        for c in due.into_iter().filter(|c| c.provider == provider) {
+            if !scope.is_empty() {
+                // Only sync connections configured to watch this webhook's resource (e.g.
+                // the specific GitHub repo), not every connection of the provider/org.
+                let watches = self
+                    .engine
+                    .db
+                    .get_connection_credentials(&c.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|cr| cr.sync_cursor)
+                    .and_then(|cur| serde_json::from_str::<Vec<String>>(&cur).ok())
+                    .is_some_and(|repos| repos.contains(&scope));
+                if !watches {
+                    continue;
+                }
             }
+            let _ = self.import(&c.org_id, &c.id, "event").await;
         }
         Ok(())
     }
