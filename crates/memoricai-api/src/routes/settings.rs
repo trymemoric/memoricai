@@ -11,7 +11,10 @@ use serde_json::{json, Value};
 
 /// Org settings are org-wide, so a credential scoped to a subset of containers must
 /// never read or mutate them, even if the underlying membership is admin.
-fn require_unrestricted_admin(state: &AppState, ctx: &memoricai_core::model::AuthContext) -> Result<(), ApiError> {
+fn require_unrestricted_admin(
+    state: &AppState,
+    ctx: &memoricai_core::model::AuthContext,
+) -> Result<(), ApiError> {
     state.auth.authorize_admin(ctx)?;
     if state.auth.is_container_restricted(ctx) {
         return Err(ApiError(Error::Forbidden(

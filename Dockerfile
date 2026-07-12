@@ -10,7 +10,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/memoricai /usr/local/bin/memoricai
-ENV MEMORICAI_BIND=0.0.0.0:6767
-EXPOSE 6767
+ENV MEMORICAI_BIND=0.0.0.0:7373
+EXPOSE 7373
 ENTRYPOINT ["memoricai"]
 CMD ["serve"]

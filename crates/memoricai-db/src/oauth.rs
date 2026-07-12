@@ -212,5 +212,4 @@ impl Db {
         .map_err(db_err)?;
         Ok(row.as_ref().map(map_token))
     }
-
 }

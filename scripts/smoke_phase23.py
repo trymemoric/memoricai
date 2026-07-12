@@ -3,7 +3,7 @@
 connectors, Memory Router, and MCP-over-OAuth. Usage: smoke_phase23.py <keyfile>"""
 import base64, hashlib, json, sys, pathlib, time, urllib.request, urllib.error, urllib.parse
 
-BASE = "http://127.0.0.1:6767"
+BASE = "http://127.0.0.1:7373"
 KEY = pathlib.Path(sys.argv[1]).read_text().strip()
 TAG = "mc_project_smoke"
 results = []

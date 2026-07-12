@@ -39,7 +39,7 @@ fn base_url(headers: &HeaderMap) -> ApiResult<String> {
         let host = headers
             .get("host")
             .and_then(|value| value.to_str().ok())
-            .unwrap_or("localhost:6767");
+            .unwrap_or("localhost:7373");
         format!("http://{host}")
     });
     let url = reqwest::Url::parse(&candidate)

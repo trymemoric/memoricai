@@ -202,4 +202,3 @@ pub(crate) fn map_memory(row: &PgRow) -> Memory {
         updated_at: row.get("updated_at"),
     }
 }
-

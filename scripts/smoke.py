@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import json, time, urllib.request, urllib.error, sys, pathlib
 
-BASE = "http://127.0.0.1:6767"
+BASE = "http://127.0.0.1:7373"
 KEY = pathlib.Path(sys.argv[1]).read_text().strip()
 TAG = "mc_project_smoke"
 results = []

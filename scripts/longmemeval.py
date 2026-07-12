@@ -36,7 +36,7 @@ import urllib.error
 import urllib.request
 
 SCRATCH = pathlib.Path(__file__).parent
-BASE = os.environ.get("LME_BASE", "http://127.0.0.1:6767")
+BASE = os.environ.get("LME_BASE", "http://127.0.0.1:7373")
 KEY = os.environ.get("LME_API_KEY") or (
     (SCRATCH / "lme.key").read_text().strip() if (SCRATCH / "lme.key").exists() else ""
 )
@@ -52,7 +52,11 @@ TOP_K = 10
 CTX_CHAR_CAP = 40000
 CLAUDE_MODEL = "sonnet"
 READER = os.environ.get("LME_READER", "claude")  # claude | openai
-OPENAI_MODEL = "gpt-4o-2024-08-06"
+# Reader model (the system under test). Override to re-evaluate a cheaper model.
+OPENAI_MODEL = os.environ.get("LME_OPENAI_MODEL", "gpt-4o-2024-08-06")
+# Judge stays fixed across reader-model runs so accuracy stays comparable to the
+# baseline; only the reader (LME_OPENAI_MODEL) should vary between runs.
+JUDGE_MODEL = os.environ.get("LME_JUDGE_MODEL", "gpt-4o-2024-08-06")
 OPENAI_KEY = (
     (SCRATCH / "openai.key").read_text().strip()
     if (SCRATCH / "openai.key").exists()
@@ -444,9 +448,9 @@ def claude_call(prompt, timeout=240):
     return p.stdout.strip()
 
 
-def openai_call(prompt, max_tokens=1000, timeout=180):
+def openai_call(prompt, max_tokens=1000, timeout=180, model=None):
     body = {
-        "model": OPENAI_MODEL,
+        "model": model or OPENAI_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0,
         "max_tokens": max_tokens,
@@ -475,6 +479,11 @@ def reader_call(prompt, max_tokens=1000, timeout=240):
     if READER == "openai":
         return openai_call(prompt, max_tokens=max_tokens, timeout=timeout)
     return claude_call(prompt, timeout=timeout)
+
+
+def judge_call(prompt, max_tokens=10, timeout=120):
+    # Grade with the fixed JUDGE_MODEL so swapping the reader does not swap the grader.
+    return openai_call(prompt, max_tokens=max_tokens, timeout=timeout, model=JUDGE_MODEL)
 
 
 def cmd_answer():
@@ -521,7 +530,7 @@ def cmd_judge():
 
     def do(row):
         try:
-            resp = reader_call(judge_prompt(row), max_tokens=10, timeout=120)
+            resp = judge_call(judge_prompt(row))
             row["judge_raw"] = resp[:100]
             row["correct"] = "yes" in resp.lower()[:20]
         except Exception as e:

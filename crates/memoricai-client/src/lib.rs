@@ -4,7 +4,7 @@
 //! use memoricai_client::Client;
 //!
 //! # async fn demo() -> Result<(), memoricai_client::ClientError> {
-//! let client = Client::new("http://localhost:6767", "mc_...");
+//! let client = Client::new("http://localhost:7373", "mc_...");
 //! let doc = client.add_text("My name is Ada.", "mc_project_default").await?;
 //! client.wait_for_document(&doc.id, std::time::Duration::from_secs(60)).await?;
 //! let res = client
@@ -26,11 +26,10 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 pub use memoricai_core::dto::{
-    CreateMemoriesRequest, CreateMemoriesResponse, DocumentListRequest,
-    DocumentListResponse, DocumentSearchRequest, DocumentSearchResponse, ForgetMatchingRequest,
-    ForgetMatchingResponse, ForgetRequest, IngestRequest, IngestResponse, MemoryInput,
-    MemorySearchRequest, MemorySearchResponse, PatchMemoryRequest, ProfileRequest, ProfileResponse,
-    SearchInclude,
+    CreateMemoriesRequest, CreateMemoriesResponse, DocumentListRequest, DocumentListResponse,
+    DocumentSearchRequest, DocumentSearchResponse, ForgetMatchingRequest, ForgetMatchingResponse,
+    ForgetRequest, IngestRequest, IngestResponse, MemoryInput, MemorySearchRequest,
+    MemorySearchResponse, PatchMemoryRequest, ProfileRequest, ProfileResponse, SearchInclude,
 };
 pub use memoricai_core::model::{Document, Memory, Profile};
 
@@ -65,7 +64,7 @@ struct ApiErrorBody {
 }
 
 impl Client {
-    /// `base_url` like `http://localhost:6767`; `api_key` an `mc_...` key.
+    /// `base_url` like `http://localhost:7373`; `api_key` an `mc_...` key.
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),

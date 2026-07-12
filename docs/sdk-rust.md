@@ -18,7 +18,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), memoricai_client::ClientError> {
-    let client = Client::new("http://localhost:6767", "mc_...");
+    let client = Client::new("http://localhost:7373", "mc_...");
 
     // Ingest returns instantly with status "queued"; processing is async.
     let doc = client.add_text("My name is Ada.", "mc_project_default").await?;
@@ -43,7 +43,7 @@ async fn main() -> Result<(), memoricai_client::ClientError> {
 let client = Client::new(base_url, api_key);
 ```
 
-- `base_url`, e.g. `http://localhost:6767` (trailing slashes are trimmed).
+- `base_url`, e.g. `http://localhost:7373` (trailing slashes are trimmed).
 - `api_key`, an `mc_...` organization or container-scoped key.
 - Requests share a pooled HTTP client with a 120 s timeout. `Client` is `Clone`
   (cheap; the pool is shared).
@@ -111,7 +111,7 @@ The crate ships an ignored end-to-end test that exercises
 ingest → wait → digest search → profile against a live server:
 
 ```bash
-MEMORICAI_SDK_TEST_URL=http://localhost:6767 \
+MEMORICAI_SDK_TEST_URL=http://localhost:7373 \
 MEMORICAI_SDK_TEST_KEY=mc_... \
 cargo test -p memoricai-client -- --ignored
 ```

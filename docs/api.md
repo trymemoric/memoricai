@@ -1,6 +1,6 @@
 # memoricai HTTP API (`/v1`)
 
-Base URL: wherever `memoricai serve` listens (default `http://localhost:6767`). All request/response bodies are JSON in camelCase. Request bodies are capped at 12 MiB.
+Base URL: wherever `memoricai serve` listens (default `http://localhost:7373`). All request/response bodies are JSON in camelCase. Request bodies are capped at 12 MiB.
 
 SDKs wrap this API 1:1, see [sdk-rust.md](sdk-rust.md), [sdk-python.md](sdk-python.md), [sdk-typescript.md](sdk-typescript.md).
 

@@ -193,8 +193,10 @@ impl Engine {
                             // A single transient renewal error (e.g. momentary pool
                             // exhaustion) must not silence the heartbeat for the rest of a
                             // long stage; log and keep renewing.
-                            if let Err(error) =
-                                heartbeat_engine.db.renew_document_lease(&heartbeat_doc_id).await
+                            if let Err(error) = heartbeat_engine
+                                .db
+                                .renew_document_lease(&heartbeat_doc_id)
+                                .await
                             {
                                 tracing::warn!(doc_id = %heartbeat_doc_id, %error, "lease renewal failed");
                             }

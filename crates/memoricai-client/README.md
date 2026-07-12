@@ -8,7 +8,7 @@ use memoricai_client::{Client, MemorySearchRequest};
 use std::time::Duration;
 
 # async fn demo() -> Result<(), memoricai_client::ClientError> {
-let client = Client::new("http://localhost:6767", "mc_...");
+let client = Client::new("http://localhost:7373", "mc_...");
 
 let doc = client.add_text("My name is Ada.", "mc_project_default").await?;
 client.wait_for_document(&doc.id, Duration::from_secs(60)).await?;

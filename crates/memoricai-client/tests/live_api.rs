@@ -1,7 +1,7 @@
 //! Live integration test for the Rust SDK against a running memoricai server.
 //! Set MEMORICAI_SDK_TEST_URL and MEMORICAI_SDK_TEST_KEY to run:
 //!
-//!   MEMORICAI_SDK_TEST_URL=http://localhost:6767 \
+//!   MEMORICAI_SDK_TEST_URL=http://localhost:7373 \
 //!   MEMORICAI_SDK_TEST_KEY=mc_... \
 //!   cargo test -p memoricai-client -- --ignored
 

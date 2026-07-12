@@ -5,7 +5,7 @@ Zero-dependency client for the memoricai `/v1` HTTP API (Node 18+ / Bun / Deno, 
 ```ts
 import { MemoricaiClient } from "@memoricai/sdk";
 
-const client = new MemoricaiClient("http://localhost:6767", "mc_...");
+const client = new MemoricaiClient("http://localhost:7373", "mc_...");
 
 const doc = await client.addText("My name is Ada.", "mc_project_default");
 await client.waitForDocument(doc.id);

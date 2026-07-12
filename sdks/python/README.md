@@ -5,7 +5,7 @@ Stdlib-only client for the memoricai `/v1` HTTP API (Python 3.9+).
 ```python
 from memoricai import Client
 
-client = Client("http://localhost:6767", "mc_...")
+client = Client("http://localhost:7373", "mc_...")
 
 doc = client.add_text("My name is Ada.", container_tag="mc_project_default")
 client.wait_for_document(doc["id"])

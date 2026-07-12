@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 
 SCRATCH = pathlib.Path(__file__).parent
-BASE = os.environ.get("LOCOMO_BASE", "http://127.0.0.1:6767")
+BASE = os.environ.get("LOCOMO_BASE", "http://127.0.0.1:7373")
 KEY = os.environ.get("LOCOMO_API_KEY") or (
     (SCRATCH / "locomo.key").read_text().strip() if (SCRATCH / "locomo.key").exists() else ""
 )

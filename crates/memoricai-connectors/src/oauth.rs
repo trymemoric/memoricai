@@ -68,7 +68,7 @@ pub fn client_secret(provider: &str) -> Result<String> {
 }
 
 pub fn base_url() -> String {
-    std::env::var("MEMORICAI_BASE_URL").unwrap_or_else(|_| "http://localhost:6767".to_string())
+    std::env::var("MEMORICAI_BASE_URL").unwrap_or_else(|_| "http://localhost:7373".to_string())
 }
 
 pub fn redirect_uri(provider: &str) -> String {

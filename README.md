@@ -115,17 +115,17 @@ Talk to it:
 KEY=mc_...   # the printed key
 
 # ingest
-curl -s localhost:6767/v1/documents \
+curl -s localhost:7373/v1/documents \
   -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
   -d '{"content":"My name is Ada and I love Rust.","containerTag":"mc_project_default"}'
 
 # search (hybrid memory + chunk search)
-curl -s localhost:6767/v1/search \
+curl -s localhost:7373/v1/search \
   -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
   -d '{"q":"what is my name","containerTag":"mc_project_default","searchMode":"hybrid"}'
 
 # profile
-curl -s localhost:6767/v1/profile \
+curl -s localhost:7373/v1/profile \
   -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
   -d '{"containerTag":"mc_project_default"}'
 ```
@@ -166,7 +166,7 @@ All configuration is via environment variables.
 | Variable | Default | Purpose |
 |---|---|---|
 | `MEMORICAI_DATABASE_URL` |, **(required)** | Postgres connection string (`DATABASE_URL` also accepted) |
-| `MEMORICAI_BIND` | `0.0.0.0:6767` | HTTP listen address |
+| `MEMORICAI_BIND` | `0.0.0.0:7373` | HTTP listen address |
 | `MEMORICAI_INGEST_CONCURRENCY` | CPU count, clamped 2-8 | Ingest worker pool size (the pipeline is I/O-bound; raise it for bulk imports) |
 | `MEMORICAI_BASE_URL` | loopback request origin only | Canonical HTTPS public origin for OAuth discovery, connector callbacks, and webhooks; required for non-loopback deployments |
 | `MEMORICAI_ROUTER_ALLOWED_ORIGINS` | public HTTPS origins | Optional comma-separated exact upstream origins for the Memory Router; required for HTTP/private-network model servers |
@@ -235,7 +235,7 @@ Detailed guides: [Rust](docs/sdk-rust.md) · [Python](docs/sdk-python.md) · [Ty
 
 ```python
 from memoricai import Client
-client = Client("http://localhost:6767", "mc_...")
+client = Client("http://localhost:7373", "mc_...")
 doc = client.add_text("My name is Ada.", container_tag="mc_project_default")
 client.wait_for_document(doc["id"])
 print(client.search_memories("what is my name",
@@ -255,7 +255,7 @@ Client configuration (Claude Code, or any client with native Streamable-HTTP sup
   "mcpServers": {
     "memoricai": {
       "type": "http",
-      "url": "http://localhost:6767/mcp",
+      "url": "http://localhost:7373/mcp",
       "headers": { "Authorization": "Bearer mc_YOUR_API_KEY" }
     }
   }
@@ -269,7 +269,7 @@ For stdio-only clients (e.g. Claude Desktop), bridge with [`mcp-remote`](https:/
   "mcpServers": {
     "memoricai": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://localhost:6767/mcp",
+      "args": ["-y", "mcp-remote", "http://localhost:7373/mcp",
                "--header", "Authorization: Bearer mc_YOUR_API_KEY"]
     }
   }
@@ -308,7 +308,7 @@ background: forgetting sweeper (60 s) · connector sync cron (4 h) · profile ag
 A Cargo workspace with downward-only dependencies:
 
 ```
-memoricai (bin)          composition root, CLI, background workers, :6767
+memoricai (bin)          composition root, CLI, background workers, :7373
 ├── memoricai-api        axum routes (/v1), auth extractor, error shapes
 ├── memoricai-mcp        MCP Streamable-HTTP server (6 tools, 3 resources, 1 prompt)
 ├── memoricai-engine     ingest pipeline, memory extraction, temporal graph, search

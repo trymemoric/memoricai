@@ -16,7 +16,7 @@ impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let database_url = env_any(&["MEMORICAI_DATABASE_URL", "DATABASE_URL"])
             .ok_or_else(|| anyhow::anyhow!("MEMORICAI_DATABASE_URL is required"))?;
-        let bind = env_any(&["MEMORICAI_BIND"]).unwrap_or_else(|| "0.0.0.0:6767".into());
+        let bind = env_any(&["MEMORICAI_BIND"]).unwrap_or_else(|| "0.0.0.0:7373".into());
         // The ingest pipeline is I/O-bound (model calls + per-fact DB writes),
         // so scale the default worker pool with the machine instead of a
         // fixed low constant.

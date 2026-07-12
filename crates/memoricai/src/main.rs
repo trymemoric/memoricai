@@ -1,5 +1,5 @@
 //! memoricai — single self-hostable binary: the memory & context engine + API
-//! + MCP server. `memoricai serve` listens on :6767.
+//! + MCP server. `memoricai serve` listens on :7373.
 
 mod config;
 

@@ -96,7 +96,6 @@ pub struct Memory {
     pub updated_at: Timestamp,
 }
 
-
 /// A RAG chunk of a document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

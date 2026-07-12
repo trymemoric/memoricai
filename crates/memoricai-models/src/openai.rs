@@ -312,6 +312,9 @@ mod tests {
         let embedder = OpenAiEmbedder::new(format!("http://{addr}"), None, "m", DIM);
         let out = embedder.embed_batch(&[]).await.unwrap();
         assert!(out.is_empty());
-        assert!(!*hit.lock().unwrap(), "empty input must not hit the network");
+        assert!(
+            !*hit.lock().unwrap(),
+            "empty input must not hit the network"
+        );
     }
 }
