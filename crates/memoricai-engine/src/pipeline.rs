@@ -56,7 +56,7 @@ impl Engine {
             Vec::new()
         };
 
-        let mut prepared_memories = Vec::with_capacity(tags.len());
+        let mut prepared_memories = Vec::new();
         for tag in &tags {
             let entity_context = self
                 .db
@@ -69,38 +69,45 @@ impl Engine {
             let fact_texts: Vec<String> = facts.iter().map(|fact| fact.content.clone()).collect();
             let embeddings = self.models.embedder.embed_batch(&fact_texts).await?;
             crate::validate_embedding_batch(&fact_texts, &embeddings, self.models.dim())?;
-            prepared_memories.push((tag.clone(), facts, embeddings));
-        }
-
-        // --- atomically replace chunks, then rebuild the document's memory graph ---
-        self.db
-            .update_document_status(doc_id, lease_token, DocumentStatus::Indexing)
-            .await?;
-        self.db
-            .replace_chunks_for_document(doc_id, &org_id, &tags, &drafts)
-            .await?;
-        // Idempotent reprocess: clear any memories previously derived from this doc.
-        self.db.delete_memories_for_document(doc_id).await?;
-        for (tag, facts, fact_embeddings) in prepared_memories {
-            for (fact, emb) in facts.iter().zip(&fact_embeddings) {
-                // Sequential so relation inference sees prior facts from this doc.
-                let mem_id = self
-                    .store_extracted(&org_id, doc.user_id.as_deref(), doc_id, &tag, fact, emb)
-                    .await?;
-                // Bucket classification (best-effort; skipped if no buckets defined).
-                if let Ok(Some(bucket)) = self.classify_bucket(&org_id, &tag, &fact.content).await {
-                    let _ = self.db.set_memory_bucket(&mem_id, &bucket).await;
-                }
+            for (fact, embedding) in facts.into_iter().zip(embeddings) {
+                let bucket_key = self
+                    .classify_bucket(&org_id, tag, &fact.content)
+                    .await
+                    .ok()
+                    .flatten();
+                prepared_memories.push(memoricai_db::memories::ExtractedMemoryDraft {
+                    user_id: doc.user_id.clone(),
+                    container_tag: tag.clone(),
+                    content: fact.content,
+                    embedding,
+                    is_static: fact.is_static,
+                    forget_after: fact
+                        .forget_after
+                        .as_deref()
+                        .and_then(crate::memory::parse_iso_date),
+                    event_date: fact
+                        .event_date
+                        .as_deref()
+                        .and_then(crate::memory::parse_iso_date),
+                    bucket_key,
+                });
             }
         }
 
-        // --- finalize ---
+        // --- atomically publish chunks, memories, graph, buckets, and final status ---
+        self.db
+            .update_document_status(doc_id, lease_token, DocumentStatus::Indexing)
+            .await?;
         let summary = make_summary(&text);
         let token_count = (text.len() / 4) as i64;
         self.db
-            .finish_document(
+            .replace_document_index(
                 doc_id,
                 lease_token,
+                &org_id,
+                &tags,
+                &drafts,
+                &prepared_memories,
                 summary.as_deref(),
                 Some(token_count),
                 chunk_count as i64,

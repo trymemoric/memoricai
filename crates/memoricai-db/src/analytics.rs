@@ -19,6 +19,19 @@ pub struct LogRow {
 }
 
 impl Db {
+    /// Delete request telemetry older than the configured retention window.
+    pub async fn purge_request_logs(&self, retention_days: i64) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM api_requests
+             WHERE created_at < now() - ($1 || ' days')::interval",
+        )
+        .bind(retention_days.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected())
+    }
+
     /// Request counts + avg duration grouped by type within the last `days`.
     pub async fn usage_by_type(&self, org_id: &str, days: i64) -> Result<Vec<UsageRow>> {
         let rows = sqlx::query(
@@ -44,7 +57,11 @@ impl Db {
 
     pub async fn total_memories(&self, org_id: &str) -> Result<i64> {
         let c: i64 = sqlx::query(
-            "SELECT count(*) AS c FROM memories WHERE org_id = $1 AND is_latest AND NOT is_forgotten",
+            "SELECT count(*) AS c FROM memories
+             WHERE org_id = $1 AND is_latest AND NOT is_forgotten
+               AND (document_id IS NULL OR EXISTS (
+                    SELECT 1 FROM documents d
+                    WHERE d.id = memories.document_id AND d.status = 'done'))",
         )
         .bind(org_id)
         .fetch_one(&self.pool)

@@ -17,6 +17,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use memoricai_core::dto::{CreateConnectionRequest, CreateConnectionResponse, IngestRequest};
 use memoricai_core::error::{Error, Result};
 use memoricai_core::model::{Connection, SyncRun};
@@ -592,8 +593,18 @@ pub(crate) async fn ensure_ok(resp: reqwest::Response) -> Result<reqwest::Respon
     if status.is_success() {
         return Ok(resp);
     }
-    let body = resp.text().await.unwrap_or_default();
-    let snippet: String = body.chars().take(200).collect();
+    let mut stream = resp.bytes_stream();
+    let mut body = Vec::new();
+    const MAX_ERROR_BODY: usize = 8 * 1024;
+    while body.len() < MAX_ERROR_BODY {
+        let Some(chunk) = stream.next().await else {
+            break;
+        };
+        let chunk = chunk.unwrap_or_default();
+        let remaining = MAX_ERROR_BODY.saturating_sub(body.len());
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    let snippet: String = String::from_utf8_lossy(&body).chars().take(200).collect();
     Err(match status.as_u16() {
         401 | 403 => Error::Unauthorized(format!(
             "connector credentials rejected by provider ({status})"
@@ -601,6 +612,32 @@ pub(crate) async fn ensure_ok(resp: reqwest::Response) -> Result<reqwest::Respon
         429 => Error::RateLimited,
         _ => Error::Model(format!("connector request failed ({status}): {snippet}")),
     })
+}
+
+/// Read a successful provider response with a hard byte ceiling. Connector content is
+/// untrusted remote input; content-length alone is insufficient because chunked responses
+/// can omit or lie about it.
+pub(crate) async fn response_bytes_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    let response = ensure_ok(response).await?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(Error::BadRequest("connector file exceeds 10 MiB".into()));
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(net)?;
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(Error::BadRequest("connector file exceeds 10 MiB".into()));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {

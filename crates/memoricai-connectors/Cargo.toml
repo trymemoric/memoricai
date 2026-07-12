@@ -11,6 +11,7 @@ memoricai-core = { workspace = true }
 memoricai-db = { workspace = true }
 memoricai-engine = { workspace = true }
 async-trait = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }

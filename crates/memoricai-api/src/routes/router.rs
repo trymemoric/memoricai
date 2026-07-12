@@ -7,9 +7,9 @@
 //! optional `x-mc-conversation-id`. On any internal error we transparently
 //! passthrough without injection.
 
-use crate::AppState;
+use crate::{AppState, RequestLog};
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -21,13 +21,13 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/v1/router/{*target}", post(proxy))
 }
 
-pub async fn proxy(
+pub(crate) async fn proxy(
     State(state): State<AppState>,
+    Extension(request_log): Extension<RequestLog>,
     Path(target): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let started = std::time::Instant::now();
     let mut upstream_body = body.clone();
     let Some(memory_token) = header(&headers, "x-memoricai-api-key") else {
         return (
@@ -39,13 +39,15 @@ pub async fn proxy(
     let ctx = match state.auth.introspect_bearer(&memory_token).await {
         Ok(ctx) => ctx,
         Err(error) => {
+            tracing::warn!(%error, "router memory authentication failed");
             return (
                 StatusCode::UNAUTHORIZED,
-                axum::Json(serde_json::json!({"error": error.to_string()})),
+                axum::Json(serde_json::json!({"error": "invalid memory API key"})),
             )
-                .into_response()
+                .into_response();
         }
     };
+    request_log.set(&ctx);
     if let Err(error) = state.auth.authorize_endpoint(&ctx, "/v1/router") {
         return (
             StatusCode::FORBIDDEN,
@@ -100,18 +102,6 @@ pub async fn proxy(
             let status =
                 StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
             let content_type = resp.headers().get("content-type").cloned();
-            let _ = state
-                .engine
-                .db
-                .log_request(
-                    "chat",
-                    &ctx.org.id,
-                    Some(&ctx.user.id),
-                    Some(&ctx.key_id),
-                    status.as_u16() as i32,
-                    started.elapsed().as_millis() as i64,
-                )
-                .await;
             let mut response = Response::new(Body::from_stream(resp.bytes_stream()));
             *response.status_mut() = status;
             if let Some(content_type) = content_type {
@@ -121,11 +111,18 @@ pub async fn proxy(
             }
             response
         }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            axum::Json(serde_json::json!({"error": "upstream_error", "message": e.to_string()})),
-        )
-            .into_response(),
+        Err(error) => {
+            let request_id = memoricai_core::ids::request_id();
+            tracing::warn!(request_id, %error, "router upstream request failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                axum::Json(serde_json::json!({
+                    "error": "upstream_error",
+                    "message": format!("upstream request failed (request id: {request_id})")
+                })),
+            )
+                .into_response()
+        }
     }
 }
 

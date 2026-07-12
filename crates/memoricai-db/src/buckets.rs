@@ -88,6 +88,9 @@ impl Db {
         let rows = sqlx::query(
             "SELECT * FROM memories WHERE org_id = $1 AND space_container_tag = $2
              AND bucket_key = $3 AND is_latest AND NOT is_forgotten
+             AND (document_id IS NULL OR EXISTS (
+                  SELECT 1 FROM documents d
+                  WHERE d.id = memories.document_id AND d.status = 'done'))
              ORDER BY created_at DESC LIMIT $4",
         )
         .bind(org_id)
@@ -157,6 +160,9 @@ impl Db {
             "SELECT * FROM memories WHERE org_id = $1 AND space_container_tag = $2
              AND is_latest AND NOT is_forgotten AND NOT is_static
              AND aggregated_at IS NULL
+             AND (document_id IS NULL OR EXISTS (
+                  SELECT 1 FROM documents d
+                  WHERE d.id = memories.document_id AND d.status = 'done'))
              AND created_at < now() - ($3 || ' days')::interval
              ORDER BY created_at ASC LIMIT $4",
         )

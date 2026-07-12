@@ -8,8 +8,11 @@ use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::extract::FromRequestParts;
-use axum::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
-use axum::http::{request::Parts, HeaderValue, StatusCode};
+use axum::http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_SECURITY_POLICY, PRAGMA, REFERRER_POLICY,
+    WWW_AUTHENTICATE, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
+};
+use axum::http::{request::Parts, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
@@ -21,6 +24,7 @@ use memoricai_engine::Engine;
 pub struct AppState {
     pub engine: Engine,
     pub auth: Arc<AuthService>,
+    pub request_body_timeout: std::time::Duration,
     /// Exact upstream origins permitted for the Memory Router. Empty = public HTTPS only.
     pub router_allowed_origins: Arc<Vec<String>>,
 }
@@ -97,11 +101,7 @@ impl FromRequestParts<AppState> for Auth {
             .auth
             .authorize_request(&ctx, parts.method.as_str(), parts.uri.path())?;
         if let Some(slot) = parts.extensions.get::<RequestLog>() {
-            *slot.0.lock().unwrap() = Some((
-                ctx.org.id.clone(),
-                Some(ctx.user.id.clone()),
-                Some(ctx.key_id.clone()),
-            ));
+            slot.set(&ctx);
         }
         Ok(Auth(ctx))
     }
@@ -113,7 +113,17 @@ type RequestIdentity = (String, Option<String>, Option<String>);
 /// Per-request slot the [`Auth`] extractor fills with the resolved identity so the
 /// access-log middleware can attribute the request in `api_requests`.
 #[derive(Clone, Default)]
-struct RequestLog(std::sync::Arc<std::sync::Mutex<Option<RequestIdentity>>>);
+pub(crate) struct RequestLog(std::sync::Arc<std::sync::Mutex<Option<RequestIdentity>>>);
+
+impl RequestLog {
+    pub(crate) fn set(&self, ctx: &AuthContext) {
+        *self.0.lock().unwrap() = Some((
+            ctx.org.id.clone(),
+            Some(ctx.user.id.clone()),
+            Some(ctx.key_id.clone()),
+        ));
+    }
+}
 
 /// Records every request (coarse path category, status, duration, and — when
 /// authenticated — org/user/key) so analytics is not limited to Memory Router calls.
@@ -129,28 +139,67 @@ async fn access_log(
     let resp = next.run(req).await;
     let status = resp.status().as_u16() as i32;
     let duration = start.elapsed().as_millis() as i64;
-    if let Some((org, user, key)) = slot.0.lock().unwrap().take() {
-        let req_type = path
-            .trim_start_matches('/')
-            .split('/')
-            .nth(1)
-            .unwrap_or("api")
-            .to_string();
-        let db = state.engine.db.clone();
-        tokio::spawn(async move {
-            let _ = db
-                .log_request(
-                    &req_type,
-                    &org,
-                    user.as_deref(),
-                    key.as_deref(),
-                    status,
-                    duration,
-                )
-                .await;
-        });
-    }
+    let identity = slot.0.lock().unwrap().take();
+    let req_type = request_type(&path);
+    let (org, user, key) = identity
+        .map(|(org, user, key)| (Some(org), user, key))
+        .unwrap_or((None, None, None));
+    let _ = state
+        .engine
+        .db
+        .log_request(
+            &req_type,
+            org.as_deref(),
+            user.as_deref(),
+            key.as_deref(),
+            status,
+            duration,
+        )
+        .await;
     resp
+}
+
+fn apply_security_headers(headers: &mut HeaderMap) {
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    headers.insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; \
+             frame-ancestors 'none'; base-uri 'none'",
+        ),
+    );
+    headers.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+}
+
+pub async fn security_headers(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(req).await;
+    apply_security_headers(response.headers_mut());
+    response
+}
+
+fn request_type(path: &str) -> String {
+    let segments: Vec<&str> = path
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    match segments.as_slice() {
+        ["v1", category, ..] => (*category).to_string(),
+        ["api", "auth", "oauth2", category, ..] => format!("oauth-{category}"),
+        [".well-known", ..] => "discovery".into(),
+        ["health"] => "health".into(),
+        _ => "api".into(),
+    }
 }
 
 /// Read the optional `x-mc-project` header (roots a connection to one container tag).
@@ -164,6 +213,8 @@ pub fn project_header(parts: &Parts) -> Option<String> {
 
 pub fn build_router(state: AppState) -> Router {
     use routes::*;
+
+    let request_body_timeout = state.request_body_timeout;
 
     Router::new()
         // documents / ingestion
@@ -234,9 +285,42 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::connections::routes())
         .merge(routes::router::routes())
         .layer(DefaultBodyLimit::max(12 * 1024 * 1024))
+        .layer(tower_http::timeout::RequestBodyTimeoutLayer::new(
+            request_body_timeout,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             access_log,
         ))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_security_headers, request_type};
+    use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, X_FRAME_OPTIONS};
+    use axum::http::HeaderMap;
+
+    #[test]
+    fn access_log_categorizes_public_and_authenticated_routes() {
+        assert_eq!(request_type("/v1/documents/doc_1"), "documents");
+        assert_eq!(request_type("/api/auth/oauth2/token"), "oauth-token");
+        assert_eq!(
+            request_type("/.well-known/openid-configuration"),
+            "discovery"
+        );
+        assert_eq!(request_type("/health"), "health");
+    }
+
+    #[test]
+    fn security_headers_disable_caching_and_browser_embedding() {
+        let mut headers = HeaderMap::new();
+        apply_security_headers(&mut headers);
+        assert_eq!(headers[CACHE_CONTROL], "no-store");
+        assert_eq!(headers[X_FRAME_OPTIONS], "DENY");
+        assert!(headers[CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'"));
+    }
 }

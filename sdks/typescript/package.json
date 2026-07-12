@@ -18,7 +18,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test tests/*.test.mjs"
   },
   "engines": {
     "node": ">=18"

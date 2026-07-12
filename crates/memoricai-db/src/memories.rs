@@ -8,6 +8,25 @@ use memoricai_core::model::Memory;
 use sqlx::{Postgres, Row, Transaction};
 use std::collections::HashMap;
 
+/// A fully model-prepared memory waiting to be committed as part of a document index.
+/// Relation/version decisions are intentionally made inside the database transaction so
+/// chunks, memories, graph edges, bucket assignments, and the final document status move
+/// together.
+#[derive(Debug, Clone)]
+pub struct ExtractedMemoryDraft {
+    pub user_id: Option<String>,
+    pub container_tag: String,
+    pub content: String,
+    pub embedding: Vec<f32>,
+    pub is_static: bool,
+    pub forget_after: Option<chrono::DateTime<chrono::Utc>>,
+    pub event_date: Option<chrono::DateTime<chrono::Utc>>,
+    pub bucket_key: Option<String>,
+}
+
+const UPDATE_THRESHOLD: f32 = 0.97;
+const EXTEND_THRESHOLD: f32 = 0.85;
+
 pub(crate) async fn prepare_memories_for_document_deletion(
     tx: &mut Transaction<'_, Postgres>,
     document_ids: &[String],
@@ -58,6 +77,147 @@ pub(crate) async fn prepare_memories_for_document_deletion(
             .execute(&mut **tx)
             .await
             .map_err(db_err)?;
+    }
+    Ok(())
+}
+
+/// Insert model-prepared memories while holding the caller's index transaction.
+///
+/// Container-scoped advisory locks serialize version-chain decisions with other atomic
+/// document replacements. All locks are taken in sorted order to avoid cross-container
+/// deadlocks when a document belongs to more than one container.
+pub(crate) async fn insert_extracted_memories(
+    tx: &mut Transaction<'_, Postgres>,
+    document_id: &str,
+    org_id: &str,
+    drafts: &[ExtractedMemoryDraft],
+) -> Result<()> {
+    let mut tags: Vec<&str> = drafts
+        .iter()
+        .map(|draft| draft.container_tag.as_str())
+        .collect();
+    tags.sort_unstable();
+    tags.dedup();
+    for tag in tags {
+        let lock_key = format!("memoricai:memory-scope:{org_id}:{tag}");
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(lock_key)
+            .execute(&mut **tx)
+            .await
+            .map_err(db_err)?;
+    }
+
+    for draft in drafts {
+        let new_id = memoricai_core::ids::memory_id();
+        let neighbor = sqlx::query(
+            r#"SELECT m.*, 1 - (m.embedding <=> $1::vector) AS similarity
+               FROM memories m
+               WHERE m.org_id = $2 AND m.space_container_tag = $3
+                 AND m.is_latest AND NOT m.is_forgotten
+                 AND m.embedding IS NOT NULL
+                 AND (m.document_id IS NULL OR m.document_id = $4 OR EXISTS (
+                       SELECT 1 FROM documents d
+                       WHERE d.id = m.document_id AND d.status = 'done'))
+               ORDER BY m.embedding <=> $1::vector
+               LIMIT 1
+               FOR UPDATE OF m"#,
+        )
+        .bind(pgvec(&draft.embedding))
+        .bind(org_id)
+        .bind(&draft.container_tag)
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_err)?;
+
+        let top = neighbor
+            .as_ref()
+            .map(|row| (map_memory(row), row.get::<f64, _>("similarity") as f32));
+        let (version, parent, root, relation, supersede, extends) = match top.as_ref() {
+            Some((memory, similarity)) if *similarity >= UPDATE_THRESHOLD => {
+                let root = memory
+                    .root_memory_id
+                    .clone()
+                    .unwrap_or_else(|| memory.id.clone());
+                (
+                    memory.version + 1,
+                    Some(memory.id.clone()),
+                    Some(root),
+                    Some(MemoryRelation::Updates),
+                    Some(memory.id.clone()),
+                    None,
+                )
+            }
+            Some((memory, similarity)) if *similarity >= EXTEND_THRESHOLD => (
+                1,
+                None,
+                None,
+                Some(MemoryRelation::Extends),
+                None,
+                Some(memory.id.clone()),
+            ),
+            _ => (1, None, None, None, None, None),
+        };
+
+        if let Some(previous_id) = supersede.as_deref() {
+            let updated = sqlx::query(
+                "UPDATE memories SET is_latest=false, updated_at=now()
+                 WHERE id=$1 AND is_latest",
+            )
+            .bind(previous_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(db_err)?;
+            if updated.rows_affected() == 0 {
+                return Err(Error::Conflict("memory was updated concurrently".into()));
+            }
+        }
+
+        let now = chrono::Utc::now();
+        sqlx::query(
+            r#"INSERT INTO memories
+               (id, document_id, org_id, user_id, memory, space_container_tag, embedding,
+                version, is_latest, parent_memory_id, root_memory_id, relation, source_count,
+                is_static, is_inference, is_forgotten, forget_after, event_date, metadata,
+                bucket_key, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7::vector,$8,true,$9,$10,$11,1,$12,false,false,
+                       $13,$14,'{}'::jsonb,$15,$16,$16)"#,
+        )
+        .bind(&new_id)
+        .bind(document_id)
+        .bind(org_id)
+        .bind(&draft.user_id)
+        .bind(&draft.content)
+        .bind(&draft.container_tag)
+        .bind(pgvec(&draft.embedding))
+        .bind(version)
+        .bind(&parent)
+        .bind(&root)
+        .bind(relation.map(|value| value.as_str()))
+        .bind(draft.is_static)
+        .bind(draft.forget_after)
+        .bind(draft.event_date)
+        .bind(&draft.bucket_key)
+        .bind(now)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+
+        if let Some(source_id) = supersede.or(extends) {
+            let edge_relation = relation.ok_or_else(|| {
+                Error::Internal("memory graph edge is missing its relation".into())
+            })?;
+            sqlx::query(
+                "INSERT INTO memory_relations (source_memory_id, target_memory_id, relation)
+                 VALUES ($1,$2,$3)",
+            )
+            .bind(source_id)
+            .bind(&new_id)
+            .bind(edge_relation.as_str())
+            .execute(&mut **tx)
+            .await
+            .map_err(db_err)?;
+        }
     }
     Ok(())
 }
@@ -254,9 +414,12 @@ impl Db {
     ) -> Result<Vec<MemoryHit>> {
         let rows = sqlx::query(
             r#"SELECT *, 1 - (embedding <=> $1::vector) AS similarity
-               FROM memories
-               WHERE org_id = $2 AND space_container_tag = $3 AND is_latest AND NOT is_forgotten
+             FROM memories
+             WHERE org_id = $2 AND space_container_tag = $3 AND is_latest AND NOT is_forgotten
                  AND id <> $4 AND embedding IS NOT NULL
+                 AND (document_id IS NULL OR EXISTS (
+                      SELECT 1 FROM documents d
+                      WHERE d.id = memories.document_id AND d.status = 'done'))
                ORDER BY embedding <=> $1::vector
                LIMIT $5"#,
         )
@@ -390,6 +553,9 @@ impl Db {
         let rows = sqlx::query(
             "SELECT * FROM memories WHERE org_id = $1 AND space_container_tag = $2
              AND is_static AND is_latest AND NOT is_forgotten
+             AND (document_id IS NULL OR EXISTS (
+                  SELECT 1 FROM documents d
+                  WHERE d.id = memories.document_id AND d.status = 'done'))
              ORDER BY updated_at DESC LIMIT $3",
         )
         .bind(org_id)
@@ -410,6 +576,9 @@ impl Db {
         let rows = sqlx::query(
             "SELECT * FROM memories WHERE org_id = $1 AND space_container_tag = $2
              AND NOT is_static AND is_latest AND NOT is_forgotten
+             AND (document_id IS NULL OR EXISTS (
+                  SELECT 1 FROM documents d
+                  WHERE d.id = memories.document_id AND d.status = 'done'))
              ORDER BY created_at DESC LIMIT $3",
         )
         .bind(org_id)
@@ -442,18 +611,14 @@ impl Db {
         Ok(map)
     }
 
-    pub async fn delete_memories_for_document(&self, document_id: &str) -> Result<()> {
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        prepare_memories_for_document_deletion(&mut tx, &[document_id.to_string()]).await?;
-        tx.commit().await.map_err(db_err)?;
-        Ok(())
-    }
-
     /// Inferred (derived) memories awaiting review, ordered by source strength.
     pub async fn list_inferred(&self, org_id: &str, container_tag: &str) -> Result<Vec<Memory>> {
         let rows = sqlx::query(
             "SELECT * FROM memories WHERE org_id = $1 AND space_container_tag = $2
              AND is_inference AND review_status IS NULL AND is_latest AND NOT is_forgotten
+             AND (document_id IS NULL OR EXISTS (
+                  SELECT 1 FROM documents d
+                  WHERE d.id = memories.document_id AND d.status = 'done'))
              ORDER BY source_count DESC, created_at DESC LIMIT 50",
         )
         .bind(org_id)

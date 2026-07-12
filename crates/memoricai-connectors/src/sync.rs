@@ -44,19 +44,41 @@ pub async fn run(
     let _ = heartbeat.await;
     match import_result {
         Ok(stats) => {
-            db.set_connection_synced(connection_id, stats.cursor.as_deref())
-                .await
-                .ok();
             // Deletion reconciliation: only when the connector fully enumerated the source
-            // (opt-in + not truncated) and marked something, remove documents no longer
-            // present upstream. Guarded so a partial/broken sync never mass-deletes.
+            // (opt-in + not truncated), remove documents no longer present upstream. An empty
+            // seen set is a valid complete enumeration and therefore deletes all old rows.
             if stats.reconcile_deletions && !stats.truncated {
                 let seen: Vec<String> = ctx.seen.lock().unwrap().iter().cloned().collect();
-                if !seen.is_empty() {
-                    let _ = db
-                        .reconcile_connection_documents(&ctx.org_id, connection_id, &seen)
-                        .await;
+                if let Err(error) = db
+                    .reconcile_connection_documents(&ctx.org_id, connection_id, &seen)
+                    .await
+                {
+                    db.finish_sync_run(
+                        &run_id,
+                        "failed",
+                        stats.processed,
+                        stats.failed,
+                        Some(&error.to_string()),
+                        Some("reconciliation"),
+                    )
+                    .await?;
+                    return Err(error);
                 }
+            }
+            if let Err(error) = db
+                .set_connection_synced(connection_id, stats.cursor.as_deref())
+                .await
+            {
+                db.finish_sync_run(
+                    &run_id,
+                    "failed",
+                    stats.processed,
+                    stats.failed,
+                    Some(&error.to_string()),
+                    Some("checkpoint"),
+                )
+                .await?;
+                return Err(error);
             }
             db.finish_sync_run(
                 &run_id,

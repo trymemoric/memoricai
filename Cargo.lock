@@ -2266,7 +2266,10 @@ dependencies = [
  "memoricai-engine",
  "memoricai-mcp",
  "memoricai-models",
+ "serde_json",
+ "sqlx",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2287,6 +2290,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower-http",
  "tracing",
  "url",
 ]
@@ -2332,6 +2336,7 @@ dependencies = [
  "regex",
  "reqwest",
  "scraper",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
@@ -4465,6 +4470,7 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper",
  "tokio",
+ "tokio-util",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -4482,9 +4488,11 @@ dependencies = [
  "http",
  "http-body",
  "pin-project-lite",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
  "url",
 ]
 

@@ -98,12 +98,17 @@ export MEMORICAI_LLM_BASE_URL=https://api.openai.com/v1
 export MEMORICAI_EMBEDDING_BASE_URL=https://api.openai.com/v1
 export OPENAI_API_KEY=sk-...
 
-# 4. Run (migrations apply automatically on startup)
+# 4. Configure production secrets and create the first owner key
 export MEMORICAI_DATABASE_URL="postgres://postgres:postgres@localhost:5432/memoricai"
+export MEMORICAI_ENV=production
+export MEMORICAI_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+./target/release/memoricai key create --org-name myorg --email me@example.com
+
+# 5. Run (migrations apply automatically on startup)
 ./target/release/memoricai serve
 ```
 
-On first run (no API keys in the database) the server bootstraps a default organization and prints an API key once. You can mint more at any time:
+Production never creates or prints an owner credential implicitly. Create keys through the explicit command above and store the encryption key and printed API key in your secret manager. Debug/development builds retain the first-run bootstrap convenience. You can mint additional organizations at any time:
 
 ```bash
 ./target/release/memoricai key create --org-name myorg --email me@example.com
@@ -171,6 +176,12 @@ All configuration is via environment variables.
 | `MEMORICAI_BASE_URL` | loopback request origin only | Canonical HTTPS public origin for OAuth discovery, connector callbacks, and webhooks; required for non-loopback deployments |
 | `MEMORICAI_ROUTER_ALLOWED_ORIGINS` | public HTTPS origins | Optional comma-separated exact upstream origins for the Memory Router; required for HTTP/private-network model servers |
 | `MEMORICAI_CONNECTOR_ALLOWED_ORIGINS` | n/a | Optional comma-separated exact origins allowed to reach private-network S3-compatible endpoints |
+| `MEMORICAI_ENV` | release: `production`; debug: `development` | Runtime security mode. Release binaries fail closed unless explicitly set to `development`/`dev`/`local`/`test` |
+| `MEMORICAI_ENCRYPTION_KEY` | n/a | 32-byte base64 or hex AES-256-GCM key for connector tokens, provider cursors, and sensitive metadata; required in production (generate with `openssl rand -base64 32`) |
+| `MEMORICAI_REQUIRE_ENCRYPTION` | `false` | Set to `true` to require an encryption key without changing the environment name |
+| `MEMORICAI_MAX_INFLIGHT_REQUESTS` | `256` | Global cap on concurrently executing HTTP requests (1-10000) |
+| `MEMORICAI_REQUEST_BODY_TIMEOUT_SECONDS` | `30` | Maximum time allowed while reading a request body (1-300 seconds) |
+| `MEMORICAI_ANALYTICS_RETENTION_DAYS` | `90` | Delete request analytics older than this many days (1-3650) |
 | `RUST_LOG` | `info,memoricai=debug` | Log filter (tracing `EnvFilter` syntax) |
 
 ### Models

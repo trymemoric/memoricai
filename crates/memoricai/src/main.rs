@@ -60,11 +60,20 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let config = Config::from_env()?;
+    memoricai_db::crypto::validate_configuration(config.production)?;
 
     match cli.command {
         Command::Migrate => {
             let db = Db::connect(&config.database_url).await?;
             db.migrate().await?;
+            let migrated = db.migrate_connection_credentials().await?;
+            let oauth_migrated = db.migrate_oauth_credentials().await?;
+            if migrated > 0 {
+                tracing::info!(migrated, "encrypted legacy connector credentials");
+            }
+            if oauth_migrated > 0 {
+                tracing::info!(oauth_migrated, "hashed legacy OAuth credentials");
+            }
             tracing::info!("migrations applied");
         }
         Command::Key {
@@ -72,6 +81,8 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let db = Db::connect(&config.database_url).await?;
             db.migrate().await?;
+            db.migrate_connection_credentials().await?;
+            db.migrate_oauth_credentials().await?;
             let auth = AuthService::new(db);
             let (org, _user, key) = auth.bootstrap_org(&org_name, &email).await?;
             println!("organization: {} ({})", org.name, org.id);
@@ -85,6 +96,33 @@ async fn main() -> anyhow::Result<()> {
 async fn serve(config: Config) -> anyhow::Result<()> {
     let db = Db::connect(&config.database_url).await?;
     db.migrate().await?;
+    let migrated = db.migrate_connection_credentials().await?;
+    let oauth_migrated = db.migrate_oauth_credentials().await?;
+    if migrated > 0 {
+        tracing::info!(migrated, "encrypted legacy connector credentials");
+    }
+    if oauth_migrated > 0 {
+        tracing::info!(oauth_migrated, "hashed legacy OAuth credentials");
+    }
+
+    let auth = Arc::new(AuthService::new(db.clone()));
+    // Never mint and print an owner credential implicitly in production. Operators must
+    // create the first key through the explicit, auditable `key create` command.
+    if db.count_api_keys().await? == 0 {
+        if config.production {
+            anyhow::bail!(
+                "no API keys exist; run `memoricai key create` before starting production"
+            );
+        }
+        let (org, _user, key) = auth
+            .bootstrap_org("default", "owner@memoricai.local")
+            .await?;
+        tracing::warn!(org = %org.id, "no API keys found — bootstrapped a development org");
+        println!("\n=== memoricai development bootstrap ===");
+        println!("A development organization was created. API key (shown once):");
+        println!("  {key}");
+        println!("Use it as:  Authorization: Bearer {key}\n");
+    }
 
     let models = Arc::new(ModelStack::from_env()?);
     tracing::info!(
@@ -102,17 +140,23 @@ async fn serve(config: Config) -> anyhow::Result<()> {
             chunk_chars: 1200,
         },
     );
-    let auth = Arc::new(AuthService::new(db.clone()));
-
-    // First-run convenience: bootstrap an org + key if none exist.
-    if db.count_api_keys().await.unwrap_or(0) == 0 {
-        if let Ok((org, _u, key)) = auth.bootstrap_org("default", "owner@memoricai.local").await {
-            tracing::warn!(org = %org.id, "no API keys found — bootstrapped a default org");
-            println!("\n=== memoricai bootstrap ===");
-            println!("A default organization was created. Your API key (shown once):");
-            println!("  {key}");
-            println!("Use it as:  Authorization: Bearer {key}\n");
-        }
+    // Bound analytics growth. The first interval tick runs immediately at startup.
+    {
+        let db = db.clone();
+        let retention_days = config.analytics_retention_days;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(24 * 3600));
+            loop {
+                tick.tick().await;
+                match db.purge_request_logs(retention_days).await {
+                    Ok(count) if count > 0 => {
+                        tracing::info!(count, retention_days, "expired analytics logs purged")
+                    }
+                    Err(error) => tracing::warn!(%error, "analytics retention purge failed"),
+                    _ => {}
+                }
+            }
+        });
     }
 
     // Background forgetting sweeper (every minute).
@@ -176,9 +220,15 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let state = AppState {
         engine: engine.clone(),
         auth: auth.clone(),
+        request_body_timeout: config.request_body_timeout,
         router_allowed_origins: Arc::new(config.router_allowed_origins),
     };
-    let app = memoricai_api::build_router(state).merge(memoricai_mcp::mcp_router(engine, auth));
+    let app = memoricai_api::build_router(state)
+        .merge(memoricai_mcp::mcp_router(engine, auth))
+        .layer(axum::middleware::from_fn(memoricai_api::security_headers))
+        .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
+            config.max_inflight_requests,
+        ));
 
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     tracing::info!(bind = %config.bind, "memoricai listening");

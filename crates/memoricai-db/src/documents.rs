@@ -113,7 +113,7 @@ impl Db {
             "UPDATE documents SET status = $2, updated_at = now(),
              lease_until = CASE WHEN $2 IN ('extracting','chunking','embedding','indexing')
                                 THEN now() + interval '5 minutes' ELSE NULL END
-             WHERE id = $1 AND lease_token = $3",
+             WHERE id = $1 AND lease_token = $3 AND lease_until > now()",
         )
         .bind(id)
         .bind(status.as_str())
@@ -159,9 +159,10 @@ impl Db {
     }
 
     pub async fn renew_document_lease(&self, id: &str, lease_token: &str) -> Result<()> {
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE documents SET lease_until=now()+interval '5 minutes'
              WHERE id=$1 AND lease_token=$2
+               AND lease_until > now()
                AND status IN ('extracting','chunking','embedding','indexing')",
         )
         .bind(id)
@@ -169,6 +170,11 @@ impl Db {
         .execute(&self.pool)
         .await
         .map_err(db_err)?;
+        if result.rows_affected() == 0 {
+            return Err(Error::Conflict(format!(
+                "lease for document {id} is no longer active"
+            )));
+        }
         Ok(())
     }
 
@@ -180,7 +186,8 @@ impl Db {
     ) -> Result<()> {
         sqlx::query(
             "UPDATE documents SET status='failed', lease_until=NULL, lease_token=NULL,
-                    last_error=$2, updated_at=now() WHERE id=$1 AND lease_token=$3",
+                    last_error=$2, updated_at=now()
+             WHERE id=$1 AND lease_token=$3 AND lease_until > now()",
         )
         .bind(id)
         .bind(error)
@@ -203,7 +210,7 @@ impl Db {
         let row = sqlx::query(
             "UPDATE documents SET content=$3, content_hash=$4,
                     metadata=COALESCE($5,metadata), status='queued', processing_attempts=0,
-                    lease_until=NULL, last_error=NULL, updated_at=now()
+                    lease_until=NULL, lease_token=NULL, last_error=NULL, updated_at=now()
              WHERE org_id=$1 AND (id=$2 OR custom_id=$2)
                AND status NOT IN ('extracting','chunking','embedding','indexing')
                AND ($6::text[] IS NULL OR container_tags <@ $6)
@@ -262,7 +269,7 @@ impl Db {
             "UPDATE documents SET content=$3, content_hash=$4, metadata=$5,
                     title=$6, doc_type=$7, container_tags=$8, connection_id=$9,
                     source=$10, url=$11, status='queued', processing_attempts=0,
-                    lease_until=NULL, last_error=NULL, updated_at=now()
+                    lease_until=NULL, lease_token=NULL, last_error=NULL, updated_at=now()
              WHERE org_id=$1 AND id=$2
                AND status NOT IN ('extracting','chunking','embedding','indexing')
                AND ($12::text[] IS NULL OR container_tags <@ $12)
@@ -305,36 +312,6 @@ impl Db {
             Err(Error::NotFound(_)) => Err(Error::NotFound(format!("document {id}"))),
             Err(error) => Err(error),
         }
-    }
-
-    /// Mark a document done and record summary + counts.
-    pub async fn finish_document(
-        &self,
-        id: &str,
-        lease_token: &str,
-        summary: Option<&str>,
-        token_count: Option<i64>,
-        chunk_count: i64,
-    ) -> Result<()> {
-        let r = sqlx::query(
-            "UPDATE documents SET status = 'done', summary = COALESCE($2, summary),
-             token_count = $3, chunk_count = $4, lease_until=NULL, lease_token=NULL,
-             last_error=NULL, updated_at = now() WHERE id = $1 AND lease_token = $5",
-        )
-        .bind(id)
-        .bind(summary)
-        .bind(token_count)
-        .bind(chunk_count)
-        .bind(lease_token)
-        .execute(&self.pool)
-        .await
-        .map_err(db_err)?;
-        if r.rows_affected() == 0 {
-            return Err(Error::Conflict(format!(
-                "lease for document {id} was taken over"
-            )));
-        }
-        Ok(())
     }
 
     pub async fn patch_document(
@@ -560,9 +537,9 @@ impl Db {
 
     /// Delete documents for a connection whose external id was NOT enumerated at the source
     /// this run (`custom_id = "{connection_id}:{external_id}"`), so content deleted upstream
-    /// stops being searchable. Uses the full delete path (derived memories + version chains
-    /// are repaired). Safety-capped: skips if it would remove more than half the
-    /// connection's documents (a partial/broken enumeration must never mass-delete).
+    /// stops being searchable. The caller only invokes this after a complete enumeration;
+    /// the empty set is therefore meaningful and removes every document for an empty source.
+    /// Selection, graph repair, and deletion are one transaction.
     pub async fn reconcile_connection_documents(
         &self,
         org_id: &str,
@@ -573,42 +550,43 @@ impl Db {
             .iter()
             .map(|e| format!("{connection_id}:{e}"))
             .collect();
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
         let stale_ids: Vec<String> = sqlx::query_scalar(
             "SELECT id FROM documents
-             WHERE org_id=$1 AND connection_id=$2 AND custom_id <> ALL($3)",
+             WHERE org_id=$1 AND connection_id=$2
+               AND (custom_id IS NULL OR NOT (custom_id = ANY($3)))
+             FOR UPDATE",
         )
         .bind(org_id)
         .bind(connection_id)
         .bind(&seen_custom_ids)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(db_err)?;
         if stale_ids.is_empty() {
+            tx.commit().await.map_err(db_err)?;
             return Ok(0);
         }
-        let total = self
-            .count_documents_for_connection(org_id, connection_id)
-            .await?;
-        if total > 0 && (stale_ids.len() as i64) * 2 > total {
-            tracing::warn!(
-                connection_id,
-                stale = stale_ids.len(),
-                total,
-                "skipping connector deletion reconciliation (would remove >50% of documents)"
-            );
-            return Ok(0);
-        }
-        let mut deleted = 0u64;
-        for id in &stale_ids {
-            if self
-                .delete_document(org_id, id, None)
-                .await
-                .unwrap_or(false)
-            {
-                deleted += 1;
-            }
-        }
+        crate::memories::prepare_memories_for_document_deletion(&mut tx, &stale_ids).await?;
+        let deleted = sqlx::query("DELETE FROM documents WHERE id=ANY($1)")
+            .bind(&stale_ids)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        tx.commit().await.map_err(db_err)?;
         Ok(deleted)
+    }
+
+    /// Delete one provider item reported by an incremental change feed.
+    pub async fn delete_connection_document(
+        &self,
+        org_id: &str,
+        connection_id: &str,
+        external_id: &str,
+    ) -> Result<bool> {
+        let custom_id = format!("{connection_id}:{external_id}");
+        self.delete_document(org_id, &custom_id, None).await
     }
 
     /// Document counts per container tag for an org. Tags with no documents are absent.
@@ -628,64 +606,119 @@ impl Db {
 
     // ---------- chunks ----------
 
-    /// Atomically replace every chunk copy for all of a document's container tags.
-    pub async fn replace_chunks_for_document(
+    /// Atomically publish a fully prepared document index. The live lease is locked and
+    /// revalidated before any mutation, and the final `done` transition is committed with
+    /// chunk replacement, memory replacement, graph edges, and bucket assignments.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn replace_document_index(
         &self,
         document_id: &str,
+        lease_token: &str,
         org_id: &str,
         container_tags: &[String],
-        drafts: &[ChunkDraft],
-    ) -> Result<usize> {
+        chunk_drafts: &[ChunkDraft],
+        memory_drafts: &[crate::memories::ExtractedMemoryDraft],
+        summary: Option<&str>,
+        token_count: Option<i64>,
+        chunk_count: i64,
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let owned = sqlx::query_scalar::<_, i32>(
+            "SELECT 1 FROM documents
+             WHERE id=$1 AND org_id=$2 AND lease_token=$3 AND lease_until > now()
+               AND status='indexing'
+             FOR UPDATE",
+        )
+        .bind(document_id)
+        .bind(org_id)
+        .bind(lease_token)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        if owned.is_none() {
+            return Err(Error::Conflict(format!(
+                "lease for document {document_id} is no longer active"
+            )));
+        }
+
         sqlx::query("DELETE FROM chunks WHERE document_id=$1")
             .bind(document_id)
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
-        if drafts.is_empty() || container_tags.is_empty() {
-            tx.commit().await.map_err(db_err)?;
-            return Ok(0);
-        }
-        let count = drafts.len().saturating_mul(container_tags.len());
-        let mut ids = Vec::with_capacity(count);
-        let mut tags = Vec::with_capacity(count);
-        let mut contents = Vec::with_capacity(count);
-        let mut chunk_types = Vec::with_capacity(count);
-        let mut positions = Vec::with_capacity(count);
-        let mut embeddings = Vec::with_capacity(count);
-        let mut metadatas = Vec::with_capacity(count);
-        for tag in container_tags {
-            for (content, position, chunk_type, embedding, metadata) in drafts {
-                ids.push(memoricai_core::ids::chunk_id());
-                tags.push(tag.as_str());
-                contents.push(content.as_str());
-                chunk_types.push(chunk_type.as_str());
-                positions.push(*position);
-                embeddings.push(pgvec(embedding));
-                metadatas.push(metadata);
+        if !chunk_drafts.is_empty() && !container_tags.is_empty() {
+            let count = chunk_drafts.len().saturating_mul(container_tags.len());
+            let mut ids = Vec::with_capacity(count);
+            let mut tags = Vec::with_capacity(count);
+            let mut contents = Vec::with_capacity(count);
+            let mut chunk_types = Vec::with_capacity(count);
+            let mut positions = Vec::with_capacity(count);
+            let mut embeddings = Vec::with_capacity(count);
+            let mut metadatas = Vec::with_capacity(count);
+            for tag in container_tags {
+                for (content, position, chunk_type, embedding, metadata) in chunk_drafts {
+                    ids.push(memoricai_core::ids::chunk_id());
+                    tags.push(tag.as_str());
+                    contents.push(content.as_str());
+                    chunk_types.push(chunk_type.as_str());
+                    positions.push(*position);
+                    embeddings.push(pgvec(embedding));
+                    metadatas.push(metadata);
+                }
             }
+            sqlx::query(
+                r#"INSERT INTO chunks
+                   (id, document_id, org_id, space_container_tag, content, chunk_type,
+                    position, embedding, metadata)
+                   SELECT t.id, $2, $3, t.tag, t.content, t.chunk_type, t.position,
+                          t.embedding::vector, t.metadata
+                   FROM unnest($1::text[], $4::text[], $5::text[], $6::text[],
+                               $7::int4[], $8::text[], $9::jsonb[])
+                        AS t(id, tag, content, chunk_type, position, embedding, metadata)"#,
+            )
+            .bind(&ids)
+            .bind(document_id)
+            .bind(org_id)
+            .bind(&tags)
+            .bind(&contents)
+            .bind(&chunk_types)
+            .bind(&positions)
+            .bind(&embeddings)
+            .bind(&metadatas)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
         }
-        sqlx::query(
-            r#"INSERT INTO chunks
-               (id, document_id, org_id, space_container_tag, content, chunk_type, position, embedding, metadata)
-               SELECT t.id, $2, $3, t.tag, t.content, t.chunk_type, t.position, t.embedding::vector, t.metadata
-               FROM unnest($1::text[], $4::text[], $5::text[], $6::text[], $7::int4[], $8::text[], $9::jsonb[])
-                    AS t(id, tag, content, chunk_type, position, embedding, metadata)"#,
+
+        crate::memories::prepare_memories_for_document_deletion(
+            &mut tx,
+            &[document_id.to_string()],
         )
-        .bind(&ids)
+        .await?;
+        crate::memories::insert_extracted_memories(&mut tx, document_id, org_id, memory_drafts)
+            .await?;
+
+        let finished = sqlx::query(
+            "UPDATE documents SET status='done', summary=COALESCE($2,summary),
+                    token_count=$3, chunk_count=$4, lease_until=NULL, lease_token=NULL,
+                    last_error=NULL, updated_at=now()
+             WHERE id=$1 AND lease_token=$5 AND lease_until > now()",
+        )
         .bind(document_id)
-        .bind(org_id)
-        .bind(&tags)
-        .bind(&contents)
-        .bind(&chunk_types)
-        .bind(&positions)
-        .bind(&embeddings)
-        .bind(&metadatas)
+        .bind(summary)
+        .bind(token_count)
+        .bind(chunk_count)
+        .bind(lease_token)
         .execute(&mut *tx)
         .await
         .map_err(db_err)?;
+        if finished.rows_affected() == 0 {
+            return Err(Error::Conflict(format!(
+                "lease for document {document_id} expired during index commit"
+            )));
+        }
         tx.commit().await.map_err(db_err)?;
-        Ok(count)
+        Ok(())
     }
 
     pub async fn search_chunks(

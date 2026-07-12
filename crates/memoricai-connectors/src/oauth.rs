@@ -137,9 +137,10 @@ pub async fn exchange_code(provider: &str, code: &str) -> Result<TokenSet> {
     }
     let resp = req.send().await.map_err(|e| Error::Model(e.to_string()))?;
     if !resp.status().is_success() {
-        let s = resp.status();
-        let t = resp.text().await.unwrap_or_default();
-        return Err(Error::BadRequest(format!("token exchange {s}: {t}")));
+        return Err(Error::BadRequest(format!(
+            "provider rejected OAuth code exchange ({})",
+            resp.status()
+        )));
     }
     let v: serde_json::Value = resp.json().await.map_err(|e| Error::Model(e.to_string()))?;
     parse_token(&v)

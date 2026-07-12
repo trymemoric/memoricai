@@ -51,10 +51,7 @@ impl Reranker for RemoteReranker {
             req = req.bearer_auth(k);
         }
         let resp = req.send().await.map_err(|e| Error::Model(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(Error::Model(format!("rerank {}", resp.status())));
-        }
-        let v: serde_json::Value = resp.json().await.map_err(|e| Error::Model(e.to_string()))?;
+        let v = crate::provider_json(resp, "rerank").await?;
         // Accept {results:[{index,relevance_score}]} (Cohere/Jina) or {scores:[..]} (TEI).
         let mut scores = vec![0f32; passages.len()];
         if let Some(results) = v["results"].as_array().or_else(|| v.as_array()) {
@@ -205,10 +202,7 @@ impl Transcriber for OpenAiTranscriber {
             req = req.bearer_auth(k);
         }
         let resp = req.send().await.map_err(|e| Error::Model(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(Error::Model(format!("transcribe {}", resp.status())));
-        }
-        let v: serde_json::Value = resp.json().await.map_err(|e| Error::Model(e.to_string()))?;
+        let v = crate::provider_json(resp, "transcribe").await?;
         Ok(v["text"].as_str().unwrap_or_default().to_string())
     }
 }
@@ -255,10 +249,7 @@ impl Vision for OpenAiVision {
             req = req.bearer_auth(k);
         }
         let resp = req.send().await.map_err(|e| Error::Model(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(Error::Model(format!("vision {}", resp.status())));
-        }
-        let v: serde_json::Value = resp.json().await.map_err(|e| Error::Model(e.to_string()))?;
+        let v = crate::provider_json(resp, "vision").await?;
         Ok(v["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or_default()
