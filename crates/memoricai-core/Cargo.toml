@@ -1,0 +1,22 @@
+[package]
+name = "memoricai-core"
+description = "Core domain types, wire DTOs, and provider ports for memoricai — a memory & context engine for AI agents"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["memory", "ai", "agents", "llm"]
+categories = ["data-structures", "api-bindings"]
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+nanoid = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "memoricai-api"
+publish = false
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+memoricai-core = { workspace = true }
+memoricai-db = { workspace = true }
+memoricai-engine = { workspace = true }
+memoricai-auth = { workspace = true }
+memoricai-connectors = { workspace = true }
+axum = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+url = { workspace = true }
+
+[lints]
+workspace = true

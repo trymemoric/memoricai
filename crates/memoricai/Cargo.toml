@@ -1,0 +1,35 @@
+[package]
+name = "memoricai"
+publish = false
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "memoricai"
+path = "src/main.rs"
+
+[dependencies]
+memoricai-core = { workspace = true }
+memoricai-db = { workspace = true }
+memoricai-models = { workspace = true }
+memoricai-engine = { workspace = true }
+memoricai-auth = { workspace = true }
+memoricai-api = { workspace = true }
+memoricai-mcp = { workspace = true }
+memoricai-connectors = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+
+[features]
+# In-process embedding generation via fastembed (ONNX). Off by default to
+# keep the standard binary slim; enable with --features local-embeddings.
+local-embeddings = ["memoricai-models/local-embeddings"]
+
+[lints]
+workspace = true

@@ -1,0 +1,28 @@
+[package]
+name = "memoricai-connectors"
+publish = false
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+memoricai-core = { workspace = true }
+memoricai-db = { workspace = true }
+memoricai-engine = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+url = { workspace = true }
+scraper = { workspace = true }
+regex = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+
+[lints]
+workspace = true

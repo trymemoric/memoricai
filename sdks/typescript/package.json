@@ -1,0 +1,43 @@
+{
+  "name": "@memoricai/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the memoricai /v1 HTTP API",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skundu42/memoricai.git",
+    "directory": "sdks/typescript"
+  },
+  "homepage": "https://github.com/skundu42/memoricai",
+  "keywords": [
+    "memory",
+    "ai",
+    "agents",
+    "llm",
+    "sdk",
+    "memoricai"
+  ]
+}
