@@ -386,7 +386,10 @@ async fn authenticate_client(
     if let Some(expected) = &client.client_secret {
         let supplied =
             client_secret.ok_or_else(|| ApiError(Error::Unauthorized("invalid_client".into())))?;
-        if !constant_time_eq(expected, supplied) {
+        // The stored secret is a SHA-256 hash; also accept a legacy plaintext match so
+        // clients registered before hashing keep working.
+        let hashed = memoricai_db::crypto::hash_token(supplied);
+        if !constant_time_eq(expected, &hashed) && !constant_time_eq(expected, supplied) {
             return Err(ApiError(Error::Unauthorized("invalid_client".into())));
         }
     }

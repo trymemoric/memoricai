@@ -91,6 +91,55 @@ pub fn decrypt_opt(stored: Option<String>) -> Option<String> {
     stored.map(|s| decrypt(&s))
 }
 
+/// One-way hash for opaque high-entropy credentials that are only ever *verified* by
+/// equality (OAuth access/refresh tokens, confidential client secrets). Deterministic
+/// SHA-256 hex so lookups/comparisons still work while the plaintext is never stored.
+pub fn hash_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(token.as_bytes());
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// True if a metadata key names a sensitive value (mirrors the API redaction heuristic).
+fn is_sensitive_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    k.contains("secret") || k.contains("key") || k.contains("token") || k.contains("password")
+}
+
+/// Encrypt sensitive string fields inside a connection-metadata JSON object in place
+/// (e.g. S3 `secretAccessKey`/`accessKeyId`, Granola `apiKey`). No-op without a key.
+pub fn encrypt_metadata(value: &mut serde_json::Value) {
+    walk_metadata(value, &encrypt, None);
+}
+
+/// Reverse of [`encrypt_metadata`].
+pub fn decrypt_metadata(value: &mut serde_json::Value) {
+    walk_metadata(value, &|s| decrypt(s), None);
+}
+
+fn walk_metadata(value: &mut serde_json::Value, f: &dyn Fn(&str) -> String, key: Option<&str>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                walk_metadata(v, f, Some(k));
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items.iter_mut() {
+                walk_metadata(v, f, key);
+            }
+        }
+        serde_json::Value::String(s) if key.is_some_and(is_sensitive_key) => {
+            *s = f(s);
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +150,32 @@ mod tests {
         // and decrypt never mangles a plaintext value.
         assert_eq!(decrypt(&encrypt("ya29.secret-token")), "ya29.secret-token");
         assert_eq!(decrypt("legacy-plaintext"), "legacy-plaintext");
+    }
+
+    #[test]
+    fn hash_token_is_deterministic_hex() {
+        let h = hash_token("mc-secret");
+        assert_eq!(h, hash_token("mc-secret"));
+        assert_ne!(h, hash_token("other"));
+        assert_eq!(h.len(), 64);
+        assert!(h.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn metadata_only_touches_sensitive_keys() {
+        let mut v = serde_json::json!({
+            "bucket": "public-bucket",
+            "region": "us-east-1",
+            "secretAccessKey": "abc",
+            "apiKey": "xyz",
+        });
+        encrypt_metadata(&mut v);
+        decrypt_metadata(&mut v);
+        // Without a key encryption is a no-op, but non-sensitive fields are never altered
+        // and sensitive ones round-trip.
+        assert_eq!(v["bucket"], "public-bucket");
+        assert_eq!(v["region"], "us-east-1");
+        assert_eq!(v["secretAccessKey"], "abc");
+        assert_eq!(v["apiKey"], "xyz");
     }
 }

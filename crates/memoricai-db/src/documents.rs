@@ -558,6 +558,59 @@ impl Db {
         Ok(count)
     }
 
+    /// Delete documents for a connection whose external id was NOT enumerated at the source
+    /// this run (`custom_id = "{connection_id}:{external_id}"`), so content deleted upstream
+    /// stops being searchable. Uses the full delete path (derived memories + version chains
+    /// are repaired). Safety-capped: skips if it would remove more than half the
+    /// connection's documents (a partial/broken enumeration must never mass-delete).
+    pub async fn reconcile_connection_documents(
+        &self,
+        org_id: &str,
+        connection_id: &str,
+        seen_external_ids: &[String],
+    ) -> Result<u64> {
+        let seen_custom_ids: Vec<String> = seen_external_ids
+            .iter()
+            .map(|e| format!("{connection_id}:{e}"))
+            .collect();
+        let stale_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM documents
+             WHERE org_id=$1 AND connection_id=$2 AND custom_id <> ALL($3)",
+        )
+        .bind(org_id)
+        .bind(connection_id)
+        .bind(&seen_custom_ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        if stale_ids.is_empty() {
+            return Ok(0);
+        }
+        let total = self
+            .count_documents_for_connection(org_id, connection_id)
+            .await?;
+        if total > 0 && (stale_ids.len() as i64) * 2 > total {
+            tracing::warn!(
+                connection_id,
+                stale = stale_ids.len(),
+                total,
+                "skipping connector deletion reconciliation (would remove >50% of documents)"
+            );
+            return Ok(0);
+        }
+        let mut deleted = 0u64;
+        for id in &stale_ids {
+            if self
+                .delete_document(org_id, id, None)
+                .await
+                .unwrap_or(false)
+            {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
     /// Document counts per container tag for an org. Tags with no documents are absent.
     pub async fn count_documents_by_tag(&self, org_id: &str) -> Result<HashMap<String, i64>> {
         let rows = sqlx::query(

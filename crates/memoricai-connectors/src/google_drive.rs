@@ -17,7 +17,10 @@ impl Connector for GoogleDrive {
     async fn import(&self, ctx: &ImportCtx<'_>) -> Result<SyncStats> {
         let token = ctx.token()?;
         let client = http();
-        let mut stats = SyncStats::default();
+        let mut stats = SyncStats {
+            reconcile_deletions: true,
+            ..Default::default()
+        };
         let limit = ctx.document_limit.max(0);
         let mut page_token: Option<String> = None;
 
@@ -47,6 +50,7 @@ impl Connector for GoogleDrive {
             let empty = vec![];
             for f in v["files"].as_array().unwrap_or(&empty) {
                 let id = f["id"].as_str().unwrap_or_default();
+                ctx.mark_seen(id);
                 let name = f["name"].as_str().unwrap_or_default().to_string();
                 let mime = f["mimeType"].as_str().unwrap_or_default();
 
@@ -123,7 +127,11 @@ impl Connector for GoogleDrive {
                 }
             }
             page_token = v["nextPageToken"].as_str().map(str::to_string);
-            if page_token.is_none() || (limit > 0 && (stats.processed + stats.failed) >= limit) {
+            if limit > 0 && (stats.processed + stats.failed) >= limit {
+                stats.truncated = true;
+                break;
+            }
+            if page_token.is_none() {
                 break;
             }
         }

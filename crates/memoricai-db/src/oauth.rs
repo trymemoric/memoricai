@@ -96,7 +96,7 @@ impl Db {
              VALUES ($1,$2,$3,$4,$5,$6)",
         )
         .bind(&c.id)
-        .bind(&c.client_secret)
+        .bind(c.client_secret.as_deref().map(crate::crypto::hash_token))
         .bind(&c.name)
         .bind(&c.redirect_uris)
         .bind(&c.grant_types)
@@ -179,8 +179,8 @@ impl Db {
                 scope, permission, access_expires_at, refresh_expires_at, revoked)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
         )
-        .bind(&t.access_token)
-        .bind(&t.refresh_token)
+        .bind(crate::crypto::hash_token(&t.access_token))
+        .bind(t.refresh_token.as_deref().map(crate::crypto::hash_token))
         .bind(&t.client_id)
         .bind(&t.user_id)
         .bind(&t.org_id)
@@ -198,7 +198,7 @@ impl Db {
 
     pub async fn get_oauth_token(&self, access_token: &str) -> Result<Option<OAuthToken>> {
         let row = sqlx::query("SELECT * FROM oauth_tokens WHERE access_token = $1 AND NOT revoked")
-            .bind(access_token)
+            .bind(crate::crypto::hash_token(access_token))
             .fetch_optional(&self.pool)
             .await
             .map_err(db_err)?;
@@ -216,7 +216,7 @@ impl Db {
              WHERE refresh_token = $1 AND client_id = $2 AND NOT revoked
              RETURNING *",
         )
-        .bind(refresh)
+        .bind(crate::crypto::hash_token(refresh))
         .bind(client_id)
         .fetch_optional(&self.pool)
         .await

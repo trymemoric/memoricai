@@ -49,6 +49,13 @@ pub struct SyncStats {
     pub processed: i32,
     pub failed: i32,
     pub cursor: Option<String>,
+    /// Set when the import stopped before fully enumerating the source (e.g. hit the
+    /// document limit). Deletion reconciliation is skipped for truncated runs.
+    pub truncated: bool,
+    /// Opt-in: the connector fully enumerated the source and marked every seen id, so
+    /// documents no longer present may be reconciled (deleted). Off by default so
+    /// partially-enumerating connectors never trigger deletion.
+    pub reconcile_deletions: bool,
 }
 
 /// Everything a provider needs to import for one connection.
@@ -62,9 +69,17 @@ pub struct ImportCtx<'a> {
     pub access_token: Option<String>,
     pub metadata: Value,
     pub cursor: Option<String>,
+    /// External ids enumerated at the source this run, for deletion reconciliation.
+    pub seen: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl ImportCtx<'_> {
+    /// Record that `external_id` currently exists at the source (call for every enumerated
+    /// item, including ones that are skipped), so reconciliation only deletes what is gone.
+    pub fn mark_seen(&self, external_id: &str) {
+        self.seen.lock().unwrap().insert(external_id.to_string());
+    }
+
     /// Ingest one fetched item as a document attributed to this connection.
     pub async fn ingest(
         &self,
@@ -74,6 +89,7 @@ impl ImportCtx<'_> {
         title: Option<String>,
         tags: Option<Vec<String>>,
     ) -> Result<()> {
+        self.mark_seen(external_id);
         let container_tags = tags.or_else(|| {
             if self.container_tags.is_empty() {
                 None
@@ -402,6 +418,7 @@ impl Connectors {
             access_token: creds.as_ref().and_then(|c| c.access_token.clone()),
             metadata: conn.metadata.clone(),
             cursor: creds.as_ref().and_then(|c| c.sync_cursor.clone()),
+            seen: Default::default(),
         };
 
         sync::run(
@@ -544,6 +561,7 @@ impl Connectors {
             access_token: creds.as_ref().and_then(|c| c.access_token.clone()),
             metadata: conn.metadata.clone(),
             cursor: creds.as_ref().and_then(|c| c.sync_cursor.clone()),
+            seen: Default::default(),
         };
         Ok((conn, ctx))
     }

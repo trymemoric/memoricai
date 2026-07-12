@@ -54,7 +54,10 @@ impl Connector for Notion {
     async fn import(&self, ctx: &ImportCtx<'_>) -> Result<SyncStats> {
         let token = ctx.token()?;
         let client = http();
-        let mut stats = SyncStats::default();
+        let mut stats = SyncStats {
+            reconcile_deletions: true,
+            ..Default::default()
+        };
         let limit = ctx.document_limit.max(0);
         let mut start_cursor: Option<String> = None;
 
@@ -77,6 +80,7 @@ impl Connector for Notion {
             let empty = vec![];
             for page in search["results"].as_array().unwrap_or(&empty) {
                 let page_id = page["id"].as_str().unwrap_or_default();
+                ctx.mark_seen(page_id);
                 let title = page["properties"]
                     .as_object()
                     .and_then(|props| {
@@ -123,10 +127,11 @@ impl Connector for Notion {
                 }
             }
             start_cursor = search["next_cursor"].as_str().map(str::to_string);
-            if !search["has_more"].as_bool().unwrap_or(false)
-                || start_cursor.is_none()
-                || (limit > 0 && (stats.processed + stats.failed) >= limit)
-            {
+            if limit > 0 && (stats.processed + stats.failed) >= limit {
+                stats.truncated = true;
+                break;
+            }
+            if !search["has_more"].as_bool().unwrap_or(false) || start_cursor.is_none() {
                 break;
             }
         }

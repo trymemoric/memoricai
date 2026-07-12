@@ -66,6 +66,9 @@ impl Db {
         document_limit: i32,
         metadata: &Value,
     ) -> Result<()> {
+        // Encrypt sensitive metadata fields (e.g. S3 secretAccessKey, Granola apiKey) at rest.
+        let mut metadata = metadata.clone();
+        crate::crypto::encrypt_metadata(&mut metadata);
         sqlx::query(
             "INSERT INTO connections (id, provider, org_id, user_id, document_limit, container_tags, metadata)
              VALUES ($1,$2,$3,$4,$5,$6,$7)",
@@ -76,7 +79,7 @@ impl Db {
         .bind(user_id)
         .bind(document_limit)
         .bind(container_tags)
-        .bind(metadata)
+        .bind(&metadata)
         .execute(&self.pool)
         .await
         .map_err(db_err)?;
@@ -90,7 +93,10 @@ impl Db {
             .fetch_optional(&self.pool)
             .await
             .map_err(db_err)?;
-        Ok(row.as_ref().map(map_connection))
+        Ok(row.as_ref().map(map_connection).map(|mut c| {
+            crate::crypto::decrypt_metadata(&mut c.metadata);
+            c
+        }))
     }
 
     pub async fn get_connection_credentials(
