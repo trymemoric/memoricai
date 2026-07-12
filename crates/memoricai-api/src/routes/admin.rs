@@ -42,9 +42,9 @@ pub async fn provision(
     guard_provision(state.provision_key.as_deref(), &headers)?;
 
     let org_name = req.org_name.trim();
-    if org_name.is_empty() || org_name.len() > 100 {
+    if org_name.is_empty() || org_name.chars().count() > 100 {
         return Err(ApiError(Error::BadRequest(
-            "orgName must contain 1..=100 bytes after trimming".into(),
+            "orgName must contain 1..=100 characters after trimming".into(),
         )));
     }
     if !req.email.contains('@') || req.email.len() > 254 {
@@ -70,6 +70,9 @@ pub async fn provision(
 /// (404) rather than revealing it needs auth; otherwise require a bearer
 /// token equal to the configured key, compared in constant time.
 fn guard_provision(provision_key: Option<&str>, headers: &HeaderMap) -> Result<(), Error> {
+    // Belt-and-braces: `build_router` only mounts this route when
+    // `provision_key` is `Some`, so this branch is unreachable in practice.
+    // Kept as defense-in-depth in case that invariant is ever violated.
     let Some(expected) = provision_key else {
         return Err(Error::NotFound("not found".into()));
     };
@@ -77,8 +80,9 @@ fn guard_provision(provision_key: Option<&str>, headers: &HeaderMap) -> Result<(
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| {
-            v.strip_prefix("Bearer ")
-                .or_else(|| v.strip_prefix("bearer "))
+            // RFC 7235: auth-scheme is case-insensitive.
+            let (scheme, rest) = v.split_once(' ')?;
+            scheme.eq_ignore_ascii_case("bearer").then_some(rest)
         })
         .map(str::trim)
         .ok_or_else(|| Error::Unauthorized("missing bearer token".into()))?;

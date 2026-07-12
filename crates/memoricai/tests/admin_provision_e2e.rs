@@ -88,14 +88,30 @@ async fn admin_provision_end_to_end() {
         .expect("wrong-bearer request");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    // (b) provision_key None -> 404
+    // (b) provision_key None -> 404 (the route is not mounted at all, so this
+    // is axum's plain fallback 404, not the handler's in-band JSON 404).
     let disabled_state = state_with_provision_key(db.clone(), None).await;
     let disabled_router = build_router(disabled_state);
     let disabled_body = json!({ "orgName": "Acme", "email": "disabled@memoricai-itest.local" });
     let resp = disabled_router
+        .clone()
         .oneshot(provision_request(Some(PROVISION_KEY), disabled_body))
         .await
         .expect("disabled request");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // (b2) with the route unmounted, even a wrong-method probe (no body, no
+    // auth) must hit the same fallback 404 rather than a routed 405 -
+    // otherwise the method mismatch alone would reveal the path exists.
+    let wrong_method_req = Request::builder()
+        .method("GET")
+        .uri("/v1/admin/provision")
+        .body(Body::empty())
+        .unwrap();
+    let resp = disabled_router
+        .oneshot(wrong_method_req)
+        .await
+        .expect("wrong-method request");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     // (c) correct key -> 201, response has orgId and apiKey with prefix mc_<org_id>_
