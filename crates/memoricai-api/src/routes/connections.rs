@@ -1,7 +1,7 @@
 //! `/v1/connections/*` — connector CRUD, OAuth callback, sync, and webhooks.
 
 use crate::{ApiError, ApiResult, AppState, Auth};
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -32,7 +32,10 @@ pub fn routes() -> Router<AppState> {
             "/v1/connections/auth/callback/{provider}",
             get(oauth_callback),
         )
-        .route("/v1/connections/webhooks/{provider}", post(webhook))
+        .route(
+            "/v1/connections/webhooks/{provider}",
+            post(webhook).layer(DefaultBodyLimit::max(1024 * 1024)),
+        )
 }
 
 fn connectors(state: &AppState) -> Connectors {
@@ -272,6 +275,11 @@ pub async fn oauth_callback(
         .get("code")
         .ok_or_else(|| ApiError(Error::BadRequest("missing code".into())))?;
     let csrf = params.get("state").map(|s| s.as_str()).unwrap_or("");
+    if provider.len() > 64 || code.len() > 4096 || csrf.len() > 512 {
+        return Err(ApiError(Error::BadRequest(
+            "OAuth callback parameter exceeds its size limit".into(),
+        )));
+    }
     let redirect = connectors(&state)
         .oauth_callback(&provider, code, csrf)
         .await?;
@@ -297,10 +305,15 @@ pub async fn webhook(
         .await
     {
         Ok(()) => (StatusCode::OK, "ok").into_response(),
-        Err(e) => (
-            StatusCode::from_u16(e.status()).unwrap_or(StatusCode::BAD_REQUEST),
-            e.to_string(),
-        )
-            .into_response(),
+        Err(error) => {
+            let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::BAD_REQUEST);
+            if status.is_server_error() {
+                let request_id = memoricai_core::ids::request_id();
+                tracing::error!(request_id, %error, "connector webhook failed");
+                (status, format!("internal error (request id: {request_id})")).into_response()
+            } else {
+                (status, error.to_string()).into_response()
+            }
+        }
     }
 }

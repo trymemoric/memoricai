@@ -210,4 +210,116 @@ async fn ingest_search_profile_end_to_end() {
             .expect("restored predecessor")
             .is_latest
     );
+
+    // Publishing is lease-fenced and atomic even when a database write fails after chunk
+    // deletion has begun. A NaN vector is intentionally rejected by pgvector.
+    let old_chunk_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM chunks WHERE document_id=$1")
+            .bind(&id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("count old chunks");
+    let old_memory_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM memories WHERE document_id=$1")
+            .bind(&id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("count old memories");
+    sqlx::query(
+        "UPDATE documents SET status='indexing', lease_token='atomic-test',
+                lease_until=now()+interval '5 minutes' WHERE id=$1",
+    )
+    .bind(&id)
+    .execute(&db.pool)
+    .await
+    .expect("prepare atomic replacement");
+    let chunks = vec![(
+        "replacement chunk".to_string(),
+        0,
+        "text".to_string(),
+        vec![0.5; 64],
+        serde_json::json!({}),
+    )];
+    let memories = vec![memoricai_db::memories::ExtractedMemoryDraft {
+        user_id: Some(user.id.clone()),
+        container_tag: format!("mc_project_{}", &org.id[4..12]),
+        content: "replacement memory".into(),
+        embedding: vec![f32::NAN; 64],
+        is_static: false,
+        forget_after: None,
+        event_date: None,
+        bucket_key: None,
+    }];
+    let fenced = db
+        .replace_document_index(
+            &id,
+            "wrong-token",
+            &org.id,
+            &[format!("mc_project_{}", &org.id[4..12])],
+            &chunks,
+            &[],
+            None,
+            None,
+            1,
+        )
+        .await;
+    assert!(fenced.is_err(), "a stale lease token must be rejected");
+    let failed_publish = db
+        .replace_document_index(
+            &id,
+            "atomic-test",
+            &org.id,
+            &[format!("mc_project_{}", &org.id[4..12])],
+            &chunks,
+            &memories,
+            None,
+            None,
+            1,
+        )
+        .await;
+    assert!(
+        failed_publish.is_err(),
+        "invalid vector should fail publish"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM chunks WHERE document_id=$1")
+            .bind(&id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("count chunks after rollback"),
+        old_chunk_count
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM memories WHERE document_id=$1")
+            .bind(&id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("count memories after rollback"),
+        old_memory_count
+    );
+    sqlx::query("UPDATE documents SET lease_until=now()-interval '1 second' WHERE id=$1")
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .expect("expire lease");
+    assert!(
+        db.renew_document_lease(&id, "atomic-test").await.is_err(),
+        "an expired lease must not be revivable"
+    );
+    assert!(
+        db.replace_document_index(
+            &id,
+            "atomic-test",
+            &org.id,
+            &[format!("mc_project_{}", &org.id[4..12])],
+            &chunks,
+            &[],
+            None,
+            None,
+            1,
+        )
+        .await
+        .is_err(),
+        "an expired lease must not publish"
+    );
 }

@@ -3,8 +3,8 @@
 //! registration. Because this is a headless self-host, the authorize page asks
 //! the user to paste an API key to authenticate the consent.
 
-use crate::{ApiError, ApiResult, AppState, Auth};
-use axum::extract::{Form, Query, State};
+use crate::{ApiError, ApiResult, AppState, Auth, RequestLog};
+use axum::extract::{DefaultBodyLimit, Extension, Form, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -29,6 +29,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/mcp/connect-scope", post(connect_scope))
         .route("/.well-known/oauth-authorization-server", get(as_metadata))
         .route("/.well-known/openid-configuration", get(as_metadata))
+        .layer(DefaultBodyLimit::max(64 * 1024))
 }
 
 fn base_url(headers: &HeaderMap) -> ApiResult<String> {
@@ -68,6 +69,9 @@ fn base_url(headers: &HeaderMap) -> ApiResult<String> {
 }
 
 fn valid_redirect_uri(uri: &str) -> bool {
+    if uri.len() > 2048 {
+        return false;
+    }
     let Ok(url) = reqwest::Url::parse(uri) else {
         return false;
     };
@@ -159,6 +163,15 @@ pub async fn authorize(
         || q.redirect_uri.len() > 2048
         || q.scope.as_ref().is_some_and(|value| value.len() > 1024)
         || q.state.as_ref().is_some_and(|value| value.len() > 1024)
+        || q.response_type
+            .as_ref()
+            .is_some_and(|value| value.len() > 32)
+        || q.code_challenge
+            .as_ref()
+            .is_some_and(|value| value.len() > 128)
+        || q.code_challenge_method
+            .as_ref()
+            .is_some_and(|value| value.len() > 32)
     {
         return Err(ApiError(Error::BadRequest(
             "OAuth request parameter exceeds its size limit".into(),
@@ -254,8 +267,9 @@ pub struct ConsentForm {
     permission: String,
 }
 
-pub async fn consent(
+pub(crate) async fn consent(
     State(state): State<AppState>,
+    Extension(request_log): Extension<RequestLog>,
     Form(f): Form<ConsentForm>,
 ) -> ApiResult<Response> {
     if f.permission != "read" && f.permission != "write" {
@@ -263,12 +277,21 @@ pub async fn consent(
             "permission must be read or write".into(),
         )));
     }
-    if f.scope.len() > 1024 || f.state.len() > 1024 || f.container_tags.len() > 4096 {
+    if f.api_key.len() > 512
+        || f.client_id.len() > 255
+        || f.redirect_uri.len() > 2048
+        || f.scope.len() > 1024
+        || f.state.len() > 1024
+        || f.container_tags.len() > 4096
+        || f.code_challenge.len() > 128
+        || f.code_challenge_method.len() > 32
+    {
         return Err(ApiError(Error::BadRequest(
             "OAuth consent parameter exceeds its size limit".into(),
         )));
     }
     let ctx = state.auth.introspect(f.api_key.trim()).await?;
+    request_log.set(&ctx);
     let client = state
         .auth
         .db()
@@ -386,10 +409,9 @@ async fn authenticate_client(
     if let Some(expected) = &client.client_secret {
         let supplied =
             client_secret.ok_or_else(|| ApiError(Error::Unauthorized("invalid_client".into())))?;
-        // The stored secret is a SHA-256 hash; also accept a legacy plaintext match so
-        // clients registered before hashing keep working.
+        // The stored secret is a SHA-256 hash. Startup migrates legacy plaintext rows.
         let hashed = memoricai_db::crypto::hash_token(supplied);
-        if !constant_time_eq(expected, &hashed) && !constant_time_eq(expected, supplied) {
+        if !constant_time_eq(expected, &hashed) {
             return Err(ApiError(Error::Unauthorized("invalid_client".into())));
         }
     }
@@ -400,6 +422,26 @@ pub async fn token(
     State(state): State<AppState>,
     Form(f): Form<TokenForm>,
 ) -> ApiResult<Json<TokenResponse>> {
+    if f.grant_type.len() > 64
+        || f.client_id.len() > 255
+        || f.client_secret
+            .as_ref()
+            .is_some_and(|value| value.len() > 512)
+        || f.code.as_ref().is_some_and(|value| value.len() > 512)
+        || f.redirect_uri
+            .as_ref()
+            .is_some_and(|value| value.len() > 2048)
+        || f.code_verifier
+            .as_ref()
+            .is_some_and(|value| value.len() > 128)
+        || f.refresh_token
+            .as_ref()
+            .is_some_and(|value| value.len() > 512)
+    {
+        return Err(ApiError(Error::BadRequest(
+            "OAuth token parameter exceeds its size limit".into(),
+        )));
+    }
     let client = authenticate_client(
         &state,
         &f.client_id,
@@ -597,8 +639,9 @@ pub async fn register(
 
 // ---------------- MCP token exchange ----------------
 
-pub async fn session_with_key(
+pub(crate) async fn session_with_key(
     State(state): State<AppState>,
+    Extension(request_log): Extension<RequestLog>,
     headers: HeaderMap,
 ) -> ApiResult<Json<SessionWithKeyResponse>> {
     let token = headers
@@ -610,6 +653,7 @@ pub async fn session_with_key(
         })
         .ok_or_else(|| ApiError(Error::Unauthorized("missing bearer token".into())))?;
     let ctx = state.auth.introspect_oauth(token.trim()).await?;
+    request_log.set(&ctx);
     state.auth.authorize_write(&ctx)?;
     let api_key = match state.auth.allowed_container_tags(&ctx) {
         None => {

@@ -211,7 +211,7 @@ impl Db {
     pub async fn log_request(
         &self,
         req_type: &str,
-        org_id: &str,
+        org_id: Option<&str>,
         user_id: Option<&str>,
         key_id: Option<&str>,
         status_code: i32,

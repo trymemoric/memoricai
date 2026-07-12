@@ -547,7 +547,7 @@ fn extract_json_block(s: &str) -> &str {
     }
 }
 
-fn parse_iso_date(s: &str) -> Option<Timestamp> {
+pub(crate) fn parse_iso_date(s: &str) -> Option<Timestamp> {
     // Accept full RFC3339 or a bare date.
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
         return Some(dt.with_timezone(&chrono::Utc));

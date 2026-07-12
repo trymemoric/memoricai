@@ -68,7 +68,7 @@ impl Db {
     ) -> Result<()> {
         // Encrypt sensitive metadata fields (e.g. S3 secretAccessKey, Granola apiKey) at rest.
         let mut metadata = metadata.clone();
-        crate::crypto::encrypt_metadata(&mut metadata);
+        crate::crypto::encrypt_metadata(&mut metadata)?;
         sqlx::query(
             "INSERT INTO connections (id, provider, org_id, user_id, document_limit, container_tags, metadata)
              VALUES ($1,$2,$3,$4,$5,$6,$7)",
@@ -93,10 +93,12 @@ impl Db {
             .fetch_optional(&self.pool)
             .await
             .map_err(db_err)?;
-        Ok(row.as_ref().map(map_connection).map(|mut c| {
-            crate::crypto::decrypt_metadata(&mut c.metadata);
-            c
-        }))
+        let Some(row) = row.as_ref() else {
+            return Ok(None);
+        };
+        let mut connection = map_connection(row);
+        crate::crypto::decrypt_metadata(&mut connection.metadata)?;
+        Ok(Some(connection))
     }
 
     pub async fn get_connection_credentials(
@@ -110,11 +112,14 @@ impl Db {
         .fetch_optional(&self.pool)
         .await
         .map_err(db_err)?;
-        Ok(row.as_ref().map(|r| ConnectionCredentials {
-            access_token: crate::crypto::decrypt_opt(r.get("access_token")),
-            refresh_token: crate::crypto::decrypt_opt(r.get("refresh_token")),
-            expires_at: r.get("expires_at"),
-            sync_cursor: r.get("sync_cursor"),
+        let Some(row) = row.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some(ConnectionCredentials {
+            access_token: crate::crypto::decrypt_opt(row.get("access_token"))?,
+            refresh_token: crate::crypto::decrypt_opt(row.get("refresh_token"))?,
+            expires_at: row.get("expires_at"),
+            sync_cursor: crate::crypto::decrypt_opt(row.get("sync_cursor"))?,
         }))
     }
 
@@ -180,9 +185,8 @@ impl Db {
         expires_at: Option<DateTime<Utc>>,
         email: Option<&str>,
     ) -> Result<()> {
-        // Encrypt provider tokens at rest (no-op if MEMORICAI_ENCRYPTION_KEY is unset).
-        let access = crate::crypto::encrypt_opt(access);
-        let refresh = crate::crypto::encrypt_opt(refresh);
+        let access = crate::crypto::encrypt_opt(access)?;
+        let refresh = crate::crypto::encrypt_opt(refresh)?;
         sqlx::query(
             "UPDATE connections SET access_token = COALESCE($2, access_token),
              refresh_token = COALESCE($3, refresh_token),
@@ -201,15 +205,68 @@ impl Db {
     }
 
     pub async fn set_connection_synced(&self, id: &str, cursor: Option<&str>) -> Result<()> {
+        // Provider delta links/history cursors can be bearer-like capabilities too.
+        let cursor = crate::crypto::encrypt_opt(cursor)?;
         sqlx::query(
             "UPDATE connections SET last_synced_at = now(), sync_cursor = COALESCE($2, sync_cursor) WHERE id = $1",
         )
         .bind(id)
-        .bind(cursor)
+        .bind(cursor.as_deref())
         .execute(&self.pool)
         .await
         .map_err(db_err)?;
         Ok(())
+    }
+
+    /// Encrypt legacy plaintext connector credentials and sensitive metadata in place.
+    /// Safe to run on every startup: the `enc:v1:` envelope is idempotently preserved.
+    pub async fn migrate_connection_credentials(&self) -> Result<u64> {
+        if !crate::crypto::encryption_configured()? {
+            return Ok(0);
+        }
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let rows = sqlx::query(
+            "SELECT id, access_token, refresh_token, sync_cursor, metadata
+             FROM connections FOR UPDATE",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        let mut migrated = 0u64;
+        for row in rows {
+            let access: Option<String> = row.get("access_token");
+            let refresh: Option<String> = row.get("refresh_token");
+            let cursor: Option<String> = row.get("sync_cursor");
+            let mut metadata: Value = row.get("metadata");
+            let needs_migration = access
+                .as_deref()
+                .is_some_and(|v| !crate::crypto::is_encrypted(v))
+                || refresh
+                    .as_deref()
+                    .is_some_and(|v| !crate::crypto::is_encrypted(v))
+                || cursor
+                    .as_deref()
+                    .is_some_and(|v| !crate::crypto::is_encrypted(v));
+            let before_metadata = metadata.clone();
+            crate::crypto::encrypt_metadata(&mut metadata)?;
+            if needs_migration || metadata != before_metadata {
+                sqlx::query(
+                    "UPDATE connections SET access_token=$2, refresh_token=$3,
+                            sync_cursor=$4, metadata=$5 WHERE id=$1",
+                )
+                .bind(row.get::<String, _>("id"))
+                .bind(crate::crypto::encrypt_opt(access.as_deref())?)
+                .bind(crate::crypto::encrypt_opt(refresh.as_deref())?)
+                .bind(crate::crypto::encrypt_opt(cursor.as_deref())?)
+                .bind(metadata)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+                migrated += 1;
+            }
+        }
+        tx.commit().await.map_err(db_err)?;
+        Ok(migrated)
     }
 
     /// Connections whose last sync is older than `hours` (for the cron sweep).

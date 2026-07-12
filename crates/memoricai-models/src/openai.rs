@@ -74,12 +74,7 @@ impl LlmProvider for OpenAiChat {
             req = req.bearer_auth(k);
         }
         let resp = req.send().await.map_err(|e| Error::Model(e.to_string()))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Model(format!("chat {status}: {text}")));
-        }
-        let v: serde_json::Value = resp.json().await.map_err(|e| Error::Model(e.to_string()))?;
+        let v = crate::provider_json(resp, "chat").await?;
         v["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.to_string())
@@ -127,12 +122,7 @@ impl OpenAiEmbedder {
             req = req.bearer_auth(k);
         }
         let resp = req.send().await.map_err(|e| Error::Model(e.to_string()))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Model(format!("embeddings {status}: {text}")));
-        }
-        let v: serde_json::Value = resp.json().await.map_err(|e| Error::Model(e.to_string()))?;
+        let v = crate::provider_json(resp, "embeddings").await?;
         let data = v["data"]
             .as_array()
             .ok_or_else(|| Error::Model("no data in embeddings response".into()))?;

@@ -2,33 +2,45 @@
 //!
 //! A 32-byte key is read from `MEMORICAI_ENCRYPTION_KEY` (base64 or hex). When set,
 //! [`encrypt`] wraps values as `enc:v1:<base64(nonce||ciphertext)>` with AES-256-GCM;
-//! [`decrypt`] reverses it. When the key is absent (e.g. local dev) values are stored
-//! verbatim, and [`decrypt`] passes through anything without the `enc:v1:` prefix, so
-//! legacy plaintext rows keep working after a key is introduced.
+//! [`decrypt`] reverses it. Local development may explicitly run without a key, but a
+//! configured invalid key always fails and production requires a valid key. Encrypted
+//! values never fall back to ciphertext or plaintext on cryptographic failure.
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{AeadCore, Aes256Gcm, Key, Nonce};
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use base64::Engine;
+use memoricai_core::error::{Error, Result};
 
 const PREFIX: &str = "enc:v1:";
 
-fn key_bytes() -> Option<[u8; 32]> {
-    let raw = std::env::var("MEMORICAI_ENCRYPTION_KEY").ok()?;
-    let raw = raw.trim();
-    let decoded = STANDARD
-        .decode(raw)
+fn key_bytes() -> Result<Option<[u8; 32]>> {
+    let Some(raw) = std::env::var("MEMORICAI_ENCRYPTION_KEY")
         .ok()
-        .or_else(|| STANDARD.decode(raw.trim_end_matches('=')).ok())
-        .or_else(|| decode_hex(raw));
-    let bytes = decoded?;
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    let decoded = if raw.len() == 64 && raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        decode_hex(raw)
+    } else {
+        STANDARD
+            .decode(raw)
+            .ok()
+            .or_else(|| STANDARD_NO_PAD.decode(raw).ok())
+    };
+    let bytes = decoded.ok_or_else(|| {
+        Error::Internal("MEMORICAI_ENCRYPTION_KEY must be 32 bytes encoded as base64 or hex".into())
+    })?;
     if bytes.len() != 32 {
-        tracing::warn!("MEMORICAI_ENCRYPTION_KEY must decode to 32 bytes; ignoring");
-        return None;
+        return Err(Error::Internal(
+            "MEMORICAI_ENCRYPTION_KEY must decode to exactly 32 bytes".into(),
+        ));
     }
     let mut out = [0u8; 32];
     out.copy_from_slice(&bytes);
-    Some(out)
+    Ok(Some(out))
 }
 
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
@@ -41,54 +53,91 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Encrypt a credential for storage. If no key is configured, returns it unchanged.
-pub fn encrypt(plaintext: &str) -> String {
-    let Some(key) = key_bytes() else {
-        return plaintext.to_string();
+/// Validate encryption configuration before opening the service. The caller supplies the
+/// resolved production mode; encryption can also be required explicitly with
+/// `MEMORICAI_REQUIRE_ENCRYPTION=true`.
+pub fn validate_configuration(production: bool) -> Result<()> {
+    let required = std::env::var("MEMORICAI_REQUIRE_ENCRYPTION")
+        .ok()
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
+    let configured = key_bytes()?.is_some();
+    if (production || required) && !configured {
+        return Err(Error::Internal(
+            "MEMORICAI_ENCRYPTION_KEY is required in production".into(),
+        ));
+    }
+    if !configured {
+        tracing::warn!(
+            "connector credentials will use plaintext storage in development; set \
+             MEMORICAI_ENCRYPTION_KEY before storing real credentials"
+        );
+    }
+    Ok(())
+}
+
+pub fn encryption_configured() -> Result<bool> {
+    Ok(key_bytes()?.is_some())
+}
+
+pub fn is_encrypted(value: &str) -> bool {
+    value.starts_with(PREFIX)
+}
+
+/// Encrypt a credential for storage. Local development without a configured key retains
+/// plaintext compatibility; callers must run [`validate_configuration`] at startup.
+pub fn encrypt(plaintext: &str) -> Result<String> {
+    if is_encrypted(plaintext) {
+        return Ok(plaintext.to_string());
+    }
+    let Some(key) = key_bytes()? else {
+        return Ok(plaintext.to_string());
     };
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-    match cipher.encrypt(&nonce, plaintext.as_bytes()) {
-        Ok(ct) => {
-            let mut blob = nonce.to_vec();
-            blob.extend_from_slice(&ct);
-            format!("{PREFIX}{}", STANDARD.encode(blob))
-        }
-        Err(_) => plaintext.to_string(),
-    }
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext.as_bytes())
+        .map_err(|_| Error::Internal("credential encryption failed".into()))?;
+    let mut blob = nonce.to_vec();
+    blob.extend_from_slice(&ciphertext);
+    Ok(format!("{PREFIX}{}", STANDARD.encode(blob)))
 }
 
 /// Decrypt a stored credential. Values without the `enc:v1:` prefix (legacy plaintext)
 /// are returned unchanged.
-pub fn decrypt(stored: &str) -> String {
+pub fn decrypt(stored: &str) -> Result<String> {
     let Some(rest) = stored.strip_prefix(PREFIX) else {
-        return stored.to_string();
+        return Ok(stored.to_string());
     };
-    let Some(key) = key_bytes() else {
-        return stored.to_string();
+    let Some(key) = key_bytes()? else {
+        return Err(Error::Internal(
+            "encrypted credentials exist but MEMORICAI_ENCRYPTION_KEY is unavailable".into(),
+        ));
     };
-    let Ok(blob) = STANDARD.decode(rest) else {
-        return stored.to_string();
-    };
+    let blob = STANDARD
+        .decode(rest)
+        .map_err(|_| Error::Internal("stored credential is not valid base64".into()))?;
     if blob.len() < 12 {
-        return stored.to_string();
+        return Err(Error::Internal(
+            "stored credential ciphertext is truncated".into(),
+        ));
     }
     let (nonce, ct) = blob.split_at(12);
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-    match cipher.decrypt(Nonce::from_slice(nonce), ct) {
-        Ok(pt) => String::from_utf8_lossy(&pt).into_owned(),
-        Err(_) => stored.to_string(),
-    }
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(nonce), ct)
+        .map_err(|_| Error::Internal("credential decryption failed".into()))?;
+    String::from_utf8(plaintext)
+        .map_err(|_| Error::Internal("decrypted credential is not valid UTF-8".into()))
 }
 
 /// Encrypt an optional credential.
-pub fn encrypt_opt(plaintext: Option<&str>) -> Option<String> {
-    plaintext.map(encrypt)
+pub fn encrypt_opt(plaintext: Option<&str>) -> Result<Option<String>> {
+    plaintext.map(encrypt).transpose()
 }
 
 /// Decrypt an optional credential.
-pub fn decrypt_opt(stored: Option<String>) -> Option<String> {
-    stored.map(|s| decrypt(&s))
+pub fn decrypt_opt(stored: Option<String>) -> Result<Option<String>> {
+    stored.map(|value| decrypt(&value)).transpose()
 }
 
 /// One-way hash for opaque high-entropy credentials that are only ever *verified* by
@@ -104,6 +153,13 @@ pub fn hash_token(token: &str) -> String {
     out
 }
 
+pub fn is_token_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
 /// True if a metadata key names a sensitive value (mirrors the API redaction heuristic).
 fn is_sensitive_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
@@ -112,32 +168,37 @@ fn is_sensitive_key(key: &str) -> bool {
 
 /// Encrypt sensitive string fields inside a connection-metadata JSON object in place
 /// (e.g. S3 `secretAccessKey`/`accessKeyId`, Granola `apiKey`). No-op without a key.
-pub fn encrypt_metadata(value: &mut serde_json::Value) {
-    walk_metadata(value, &encrypt, None);
+pub fn encrypt_metadata(value: &mut serde_json::Value) -> Result<()> {
+    walk_metadata(value, &encrypt, None)
 }
 
 /// Reverse of [`encrypt_metadata`].
-pub fn decrypt_metadata(value: &mut serde_json::Value) {
-    walk_metadata(value, &|s| decrypt(s), None);
+pub fn decrypt_metadata(value: &mut serde_json::Value) -> Result<()> {
+    walk_metadata(value, &decrypt, None)
 }
 
-fn walk_metadata(value: &mut serde_json::Value, f: &dyn Fn(&str) -> String, key: Option<&str>) {
+fn walk_metadata(
+    value: &mut serde_json::Value,
+    f: &dyn Fn(&str) -> Result<String>,
+    key: Option<&str>,
+) -> Result<()> {
     match value {
         serde_json::Value::Object(map) => {
             for (k, v) in map.iter_mut() {
-                walk_metadata(v, f, Some(k));
+                walk_metadata(v, f, Some(k))?;
             }
         }
         serde_json::Value::Array(items) => {
             for v in items.iter_mut() {
-                walk_metadata(v, f, key);
+                walk_metadata(v, f, key)?;
             }
         }
         serde_json::Value::String(s) if key.is_some_and(is_sensitive_key) => {
-            *s = f(s);
+            *s = f(s)?;
         }
         _ => {}
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -148,8 +209,9 @@ mod tests {
     fn passthrough_without_key() {
         // No MEMORICAI_ENCRYPTION_KEY in the test env: values are stored/read verbatim,
         // and decrypt never mangles a plaintext value.
-        assert_eq!(decrypt(&encrypt("ya29.secret-token")), "ya29.secret-token");
-        assert_eq!(decrypt("legacy-plaintext"), "legacy-plaintext");
+        let encrypted = encrypt("ya29.secret-token").unwrap();
+        assert_eq!(decrypt(&encrypted).unwrap(), "ya29.secret-token");
+        assert_eq!(decrypt("legacy-plaintext").unwrap(), "legacy-plaintext");
     }
 
     #[test]
@@ -159,6 +221,8 @@ mod tests {
         assert_ne!(h, hash_token("other"));
         assert_eq!(h.len(), 64);
         assert!(h.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert!(is_token_hash(&h));
+        assert!(!is_token_hash("legacy-secret"));
     }
 
     #[test]
@@ -169,8 +233,8 @@ mod tests {
             "secretAccessKey": "abc",
             "apiKey": "xyz",
         });
-        encrypt_metadata(&mut v);
-        decrypt_metadata(&mut v);
+        encrypt_metadata(&mut v).unwrap();
+        decrypt_metadata(&mut v).unwrap();
         // Without a key encryption is a no-op, but non-sensitive fields are never altered
         // and sensitive ones round-trip.
         assert_eq!(v["bucket"], "public-bucket");

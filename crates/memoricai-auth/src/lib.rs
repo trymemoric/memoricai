@@ -94,7 +94,9 @@ impl AuthService {
             key_type: "org".into(),
             container_tag: None,
             allowed_endpoints: None,
-            rate_limit_max: 0, // 0 = unlimited for full org keys
+            // Owner keys are powerful, but they should not also be an unbounded request
+            // primitive. Operators can raise this explicitly in the database if needed.
+            rate_limit_max: 5000,
             rate_limit_window_ms: 60_000,
             expires_at: None,
             revoked: false,
@@ -246,6 +248,9 @@ impl AuthService {
 
     /// Validate any bearer: `mc_` API keys or OAuth2 access tokens.
     pub async fn introspect_bearer(&self, token: &str) -> Result<AuthContext> {
+        if token.is_empty() || token.len() > 512 || token.chars().any(char::is_control) {
+            return Err(Error::Unauthorized("malformed bearer token".into()));
+        }
         if token.starts_with("mc_") {
             self.introspect(token).await
         } else {

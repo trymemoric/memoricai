@@ -16,6 +16,38 @@ use memoricai_core::error::{Error, Result};
 use memoricai_core::ports::{EmbeddingProvider, LlmProvider, Reranker, Transcriber, Vision};
 use openai::{OpenAiChat, OpenAiEmbedder};
 
+const MAX_PROVIDER_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Parse an untrusted model-provider JSON response with a hard memory ceiling.
+pub(crate) async fn provider_json(
+    mut response: reqwest::Response,
+    operation: &str,
+) -> Result<serde_json::Value> {
+    let status = response.status();
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PROVIDER_RESPONSE_BYTES as u64)
+    {
+        return Err(Error::Model(format!("{operation} response exceeds 16 MiB")));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| Error::Model(error.to_string()))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_PROVIDER_RESPONSE_BYTES {
+            return Err(Error::Model(format!("{operation} response exceeds 16 MiB")));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    if !status.is_success() {
+        let snippet: String = String::from_utf8_lossy(&body).chars().take(512).collect();
+        return Err(Error::Model(format!("{operation} {status}: {snippet}")));
+    }
+    serde_json::from_slice(&body).map_err(|error| Error::Model(error.to_string()))
+}
+
 pub struct ModelStack {
     pub llm: Arc<dyn LlmProvider>,
     pub embedder: Arc<dyn EmbeddingProvider>,
@@ -33,6 +65,23 @@ fn env(key: &str) -> Option<String> {
 /// First-of-list env lookup.
 fn env_any(keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|k| env(k))
+}
+
+fn validated_http_url(value: String, name: &str) -> Result<String> {
+    let url = reqwest::Url::parse(&value)
+        .map_err(|_| Error::Model(format!("{name} must be an absolute HTTP(S) URL")))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(Error::Model(format!(
+            "{name} must be an HTTP(S) URL without credentials, query, or fragment"
+        )));
+    }
+    Ok(value.trim_end_matches('/').to_string())
 }
 
 impl ModelStack {
@@ -58,14 +107,16 @@ impl ModelStack {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1536);
 
-        let llm_base =
+        let llm_base = validated_http_url(
             env_any(&["MEMORICAI_LLM_BASE_URL", "OPENAI_BASE_URL"]).ok_or_else(|| {
                 Error::Model(
                 "model configuration required: set MEMORICAI_LLM_BASE_URL (or OPENAI_BASE_URL) \
                  to an OpenAI-compatible chat endpoint"
                     .into(),
             )
-            })?;
+            })?,
+            "MEMORICAI_LLM_BASE_URL",
+        )?;
         let (llm, llm_label): (Arc<dyn LlmProvider>, String) = {
             let key = env_any(&["MEMORICAI_LLM_API_KEY", "OPENAI_API_KEY"]);
             let model = env_any(&["MEMORICAI_LLM_MODEL", "OPENAI_MODEL", "MEMORICAI_MODEL"])
@@ -80,15 +131,19 @@ impl ModelStack {
             if env_any(&["MEMORICAI_EMBEDDING_PROVIDER"]).as_deref() == Some("local") {
                 Self::local_embedder(dim)?
             } else {
-                let emb_base = env_any(&["MEMORICAI_EMBEDDING_BASE_URL", "OPENAI_BASE_URL"])
-                    .ok_or_else(|| {
-                        Error::Model(
+                let emb_base = validated_http_url(
+                    env_any(&["MEMORICAI_EMBEDDING_BASE_URL", "OPENAI_BASE_URL"]).ok_or_else(
+                        || {
+                            Error::Model(
                             "model configuration required: set MEMORICAI_EMBEDDING_BASE_URL (or \
                              OPENAI_BASE_URL) to an OpenAI-compatible embeddings endpoint, or \
                              MEMORICAI_EMBEDDING_PROVIDER=local for in-process embeddings"
                                 .into(),
                         )
-                    })?;
+                        },
+                    )?,
+                    "MEMORICAI_EMBEDDING_BASE_URL",
+                )?;
                 let key = env_any(&["MEMORICAI_EMBEDDING_API_KEY", "OPENAI_API_KEY"]);
                 let model = env_any(&["MEMORICAI_EMBEDDING_MODEL"])
                     .unwrap_or_else(|| "text-embedding-3-small".into());
@@ -106,6 +161,7 @@ impl ModelStack {
         // Reranker: dedicated rerank endpoint if configured, else LLM-based.
         let reranker: Arc<dyn Reranker> = match env_any(&["MEMORICAI_RERANK_URL"]) {
             Some(url) => {
+                let url = validated_http_url(url, "MEMORICAI_RERANK_URL")?;
                 let key = env_any(&["MEMORICAI_RERANK_API_KEY", "OPENAI_API_KEY"]);
                 let model = env_any(&["MEMORICAI_RERANK_MODEL"]).unwrap_or_else(|| "rerank".into());
                 Arc::new(RemoteReranker::new(url, key, model))
@@ -115,20 +171,26 @@ impl ModelStack {
 
         // Transcription (audio/video) — optional.
         let transcriber: Option<Arc<dyn Transcriber>> =
-            env_any(&["MEMORICAI_TRANSCRIBE_BASE_URL", "OPENAI_BASE_URL"]).map(|base| {
-                let key = env_any(&["MEMORICAI_TRANSCRIBE_API_KEY", "OPENAI_API_KEY"]);
-                let model =
-                    env_any(&["MEMORICAI_TRANSCRIBE_MODEL"]).unwrap_or_else(|| "whisper-1".into());
-                Arc::new(OpenAiTranscriber::new(&base, key, model)) as Arc<dyn Transcriber>
-            });
+            env_any(&["MEMORICAI_TRANSCRIBE_BASE_URL", "OPENAI_BASE_URL"])
+                .map(|base| validated_http_url(base, "MEMORICAI_TRANSCRIBE_BASE_URL"))
+                .transpose()?
+                .map(|base| {
+                    let key = env_any(&["MEMORICAI_TRANSCRIBE_API_KEY", "OPENAI_API_KEY"]);
+                    let model = env_any(&["MEMORICAI_TRANSCRIBE_MODEL"])
+                        .unwrap_or_else(|| "whisper-1".into());
+                    Arc::new(OpenAiTranscriber::new(&base, key, model)) as Arc<dyn Transcriber>
+                });
 
         // Vision (image captioning / OCR) — optional.
-        let vision: Option<Arc<dyn Vision>> = env_any(&["MEMORICAI_VISION_BASE_URL"]).map(|base| {
-            let key = env_any(&["MEMORICAI_VISION_API_KEY", "OPENAI_API_KEY"]);
-            let model =
-                env_any(&["MEMORICAI_VISION_MODEL"]).unwrap_or_else(|| "gpt-4o-mini".into());
-            Arc::new(OpenAiVision::new(&base, key, model)) as Arc<dyn Vision>
-        });
+        let vision: Option<Arc<dyn Vision>> = env_any(&["MEMORICAI_VISION_BASE_URL"])
+            .map(|base| validated_http_url(base, "MEMORICAI_VISION_BASE_URL"))
+            .transpose()?
+            .map(|base| {
+                let key = env_any(&["MEMORICAI_VISION_API_KEY", "OPENAI_API_KEY"]);
+                let model =
+                    env_any(&["MEMORICAI_VISION_MODEL"]).unwrap_or_else(|| "gpt-4o-mini".into());
+                Arc::new(OpenAiVision::new(&base, key, model)) as Arc<dyn Vision>
+            });
 
         Ok(Self {
             llm,
@@ -180,5 +242,18 @@ impl ModelStack {
              --features local-embeddings"
                 .into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validated_http_url;
+
+    #[test]
+    fn model_urls_reject_embedded_credentials_and_non_http_schemes() {
+        assert!(validated_http_url("https://models.example/v1".into(), "TEST").is_ok());
+        assert!(validated_http_url("https://secret@models.example/v1".into(), "TEST").is_err());
+        assert!(validated_http_url("file:///tmp/model".into(), "TEST").is_err());
+        assert!(validated_http_url("https://models.example/v1?key=secret".into(), "TEST").is_err());
     }
 }

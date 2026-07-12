@@ -42,6 +42,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0005_lease_fence_and_aggregation",
         include_str!("../migrations/0005_lease_fence_and_aggregation.sql"),
     ),
+    (
+        "0006_production_hardening",
+        include_str!("../migrations/0006_production_hardening.sql"),
+    ),
 ];
 
 #[derive(Clone)]
