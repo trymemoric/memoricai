@@ -47,13 +47,14 @@ pub async fn provision(
             "orgName must contain 1..=100 characters after trimming".into(),
         )));
     }
-    if !req.email.contains('@') || req.email.len() > 254 {
+    let email = req.email.trim();
+    if !email.contains('@') || email.len() > 254 {
         return Err(ApiError(Error::BadRequest(
             "email must contain '@' and be at most 254 bytes".into(),
         )));
     }
 
-    let (org, user, api_key) = state.auth.bootstrap_org(org_name, &req.email).await?;
+    let (org, user, api_key) = state.auth.bootstrap_org(org_name, email).await?;
     tracing::info!(org = %org.id, "provisioned org via admin endpoint");
     Ok((
         StatusCode::CREATED,

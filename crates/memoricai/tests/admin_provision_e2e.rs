@@ -214,6 +214,67 @@ async fn admin_provision_end_to_end() {
     );
 }
 
+/// A padded email (leading/trailing whitespace) must dedup to the *same*
+/// user as its trimmed form, mirroring how `orgName` is already trimmed
+/// before use. Regression test for the email-not-trimmed bug where a padded
+/// email bypassed `bootstrap_org`'s by-email dedup and created a duplicate
+/// user bound to the wrong identity.
+#[tokio::test]
+#[ignore = "requires MEMORICAI_TEST_DATABASE_URL pointing to Postgres with pgvector"]
+async fn admin_provision_trims_email_for_dedup() {
+    let url = std::env::var("MEMORICAI_TEST_DATABASE_URL")
+        .expect("MEMORICAI_TEST_DATABASE_URL is required for this ignored test");
+
+    let db = Db::connect(&url).await.expect("connect");
+    db.migrate().await.expect("migrate");
+
+    const PROVISION_KEY: &str = "test-provision-key";
+    let state = state_with_provision_key(db.clone(), Some(PROVISION_KEY)).await;
+    let router = build_router(state);
+
+    let provision_request = |body: Value| {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/admin/provision")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {PROVISION_KEY}"))
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
+    };
+
+    let email = format!("padded-{}@memoricai-itest.local", uniq());
+
+    // First provision with the clean email.
+    let first_body = json!({ "orgName": "Padded Org 1", "email": email });
+    let resp = router
+        .clone()
+        .oneshot(provision_request(first_body))
+        .await
+        .expect("first provision request");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let first = body_json(resp).await;
+    let first_user_id = first["userId"].as_str().expect("userId").to_string();
+
+    // Second provision, same email but padded with leading/trailing whitespace.
+    let padded_email = format!("  {email}  ");
+    let second_body = json!({ "orgName": "Padded Org 2", "email": padded_email });
+    let resp = router
+        .clone()
+        .oneshot(provision_request(second_body))
+        .await
+        .expect("second provision request");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let second = body_json(resp).await;
+    let second_user_id = second["userId"].as_str().expect("userId").to_string();
+
+    assert_eq!(
+        first_user_id, second_user_id,
+        "a padded email must dedup to the same user as its trimmed form"
+    );
+    // Sanity: they are indeed two distinct orgs sharing one user.
+    assert_ne!(first["orgId"], second["orgId"]);
+}
+
 /// A short unique-ish suffix so repeated runs of this test don't collide on
 /// unique columns (e.g. `users.email`).
 fn uniq() -> String {
