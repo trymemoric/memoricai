@@ -13,9 +13,9 @@ pub mod oauth;
 pub mod settings;
 pub mod spaces;
 
-use memoricai_core::enums::{ChunkType, DocumentStatus, MemoryRelation};
+use memoricai_core::enums::{DocumentStatus, MemoryRelation};
 use memoricai_core::error::{Error, Result};
-use memoricai_core::model::{Chunk, Document, Memory};
+use memoricai_core::model::{Document, Memory};
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{Executor, PgPool, Row};
 
@@ -52,10 +52,6 @@ impl Db {
             .await
             .map_err(db_err)?;
         Ok(Self { pool })
-    }
-
-    pub fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
     }
 
     /// Apply not-yet-applied embedded migrations under a database advisory lock,
@@ -140,12 +136,12 @@ pub struct MemoryHit {
     pub similarity: f32,
 }
 
-/// A chunk returned from vector search.
+/// A chunk returned from vector search, carrying its source document's metadata
+/// so callers can apply metadata filters to document/chunk results.
 pub struct ChunkScore {
     pub document_id: String,
     pub content: String,
-    pub position: i32,
-    pub chunk_type: String,
+    pub doc_metadata: serde_json::Value,
     pub similarity: f32,
 }
 
@@ -207,14 +203,3 @@ pub(crate) fn map_memory(row: &PgRow) -> Memory {
     }
 }
 
-pub(crate) fn map_chunk(row: &PgRow) -> Chunk {
-    Chunk {
-        id: row.get("id"),
-        document_id: row.get("document_id"),
-        content: row.get("content"),
-        chunk_type: ChunkType::parse(&row.get::<String, _>("chunk_type")),
-        position: row.get("position"),
-        metadata: row.get("metadata"),
-        created_at: row.get("created_at"),
-    }
-}

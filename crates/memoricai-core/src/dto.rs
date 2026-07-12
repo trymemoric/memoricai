@@ -9,9 +9,6 @@ use serde_json::Value;
 fn default_limit() -> u32 {
     10
 }
-fn default_true() -> bool {
-    true
-}
 fn default_threshold() -> f32 {
     0.5
 }
@@ -156,8 +153,6 @@ pub struct DocumentSearchRequest {
     pub document_threshold: f32,
     #[serde(default)]
     pub doc_id: Option<String>,
-    #[serde(default = "default_true")]
-    pub only_matching_chunks: bool,
     #[serde(default)]
     pub include_full_docs: bool,
     #[serde(default)]
@@ -208,8 +203,6 @@ pub struct SearchInclude {
     pub documents: bool,
     #[serde(default)]
     pub related_memories: bool,
-    #[serde(default)]
-    pub summaries: bool,
     #[serde(default)]
     pub forgotten_memories: bool,
 }
@@ -572,13 +565,6 @@ pub struct AnalyticsLogsResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateBucketRequest {
-    pub key: String,
-    pub description: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct BucketsResponse {
     pub buckets: Vec<crate::model::ProfileBucket>,
 }
@@ -644,10 +630,7 @@ pub struct ConnectionListRequest {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ImportRequest {
-    #[serde(default)]
-    pub container_tags: Option<Vec<String>>,
-}
+pub struct ImportRequest {}
 
 // ---------------- oauth2 ----------------
 

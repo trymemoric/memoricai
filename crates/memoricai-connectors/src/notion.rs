@@ -56,17 +56,15 @@ impl Connector for Notion {
         let client = http();
         let mut stats = SyncStats::default();
 
-        let search: Value = client
+        let resp = client
             .post("https://api.notion.com/v1/search")
             .bearer_auth(token)
             .header("Notion-Version", NOTION_VERSION)
             .json(&json!({"filter": {"property": "object", "value": "page"}, "page_size": 50}))
             .send()
             .await
-            .map_err(net)?
-            .json()
-            .await
             .map_err(net)?;
+        let search: Value = crate::ensure_ok(resp).await?.json().await.map_err(net)?;
 
         let empty = vec![];
         for page in search["results"].as_array().unwrap_or(&empty) {

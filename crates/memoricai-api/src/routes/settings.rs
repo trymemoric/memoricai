@@ -9,8 +9,20 @@ use memoricai_core::model::OrgSettings;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+/// Org settings are org-wide, so a credential scoped to a subset of containers must
+/// never read or mutate them, even if the underlying membership is admin.
+fn require_unrestricted_admin(state: &AppState, ctx: &memoricai_core::model::AuthContext) -> Result<(), ApiError> {
+    state.auth.authorize_admin(ctx)?;
+    if state.auth.is_container_restricted(ctx) {
+        return Err(ApiError(Error::Forbidden(
+            "container-restricted credential cannot access organization settings".into(),
+        )));
+    }
+    Ok(())
+}
+
 pub async fn get(State(state): State<AppState>, Auth(ctx): Auth) -> ApiResult<Json<OrgSettings>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     let settings = state.engine.db.get_settings(&ctx.org.id).await?;
     Ok(Json(settings))
 }
@@ -20,7 +32,7 @@ pub async fn update(
     Auth(ctx): Auth,
     Json(req): Json<UpdateSettingsRequest>,
 ) -> ApiResult<Json<OrgSettings>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     // `shouldLLMFilter` is a master switch gating filter/categories/include/exclude.
     let filter_fields_present = req.filter_prompt.is_some()
         || req.categories.is_some()
@@ -78,7 +90,7 @@ pub async fn reset(
     Auth(ctx): Auth,
     Json(req): Json<ResetReq>,
 ) -> ApiResult<Json<Value>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     if req.confirmation.as_deref() != Some("RESET") {
         return Err(ApiError(Error::BadRequest(
             "confirmation must be \"RESET\"".into(),

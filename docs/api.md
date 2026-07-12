@@ -116,7 +116,6 @@ Get returns the full document including `content`, `status`, `metadata`, `contai
   "chunkThreshold": 0.5,
   "documentThreshold": 0.5,
   "docId": null,
-  "onlyMatchingChunks": true,
   "includeFullDocs": false,
   "includeSummary": false,
   "rerank": false,
@@ -152,7 +151,7 @@ A `GET /v1/documents/search?q=…&limit=…` variant exists with defaults for ev
   "rerank": false,
   "rewriteQuery": false,
   "filters": null,
-  "include": { "documents": false, "relatedMemories": false, "summaries": false, "forgottenMemories": false }
+  "include": { "documents": false, "relatedMemories": false, "forgottenMemories": false }
 }
 ```
 

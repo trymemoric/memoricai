@@ -12,18 +12,13 @@ memoricai-db = { workspace = true }
 memoricai-models = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-async-trait = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 blake3 = { workspace = true }
-regex = { workspace = true }
 url = { workspace = true }
-sysinfo = { workspace = true }
 scraper = { workspace = true }
-pulldown-cmark = { workspace = true }
 lopdf = { workspace = true }
 reqwest = { workspace = true }
 

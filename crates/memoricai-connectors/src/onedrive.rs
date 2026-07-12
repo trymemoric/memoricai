@@ -19,16 +19,14 @@ impl Connector for OneDrive {
         let client = http();
         let mut stats = SyncStats::default();
 
-        let list: Value = client
+        let resp = client
             .get("https://graph.microsoft.com/v1.0/me/drive/root/children")
             .bearer_auth(token)
             .query(&[("$top", "100")])
             .send()
             .await
-            .map_err(net)?
-            .json()
-            .await
             .map_err(net)?;
+        let list: Value = crate::ensure_ok(resp).await?.json().await.map_err(net)?;
 
         let empty = vec![];
         for item in list["value"].as_array().unwrap_or(&empty) {

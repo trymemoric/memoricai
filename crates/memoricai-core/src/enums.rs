@@ -122,34 +122,6 @@ impl Visibility {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SpaceRole {
-    Owner,
-    Admin,
-    Editor,
-    Viewer,
-}
-
-impl SpaceRole {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            SpaceRole::Owner => "owner",
-            SpaceRole::Admin => "admin",
-            SpaceRole::Editor => "editor",
-            SpaceRole::Viewer => "viewer",
-        }
-    }
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "owner" => SpaceRole::Owner,
-            "admin" => SpaceRole::Admin,
-            "editor" => SpaceRole::Editor,
-            _ => SpaceRole::Viewer,
-        }
-    }
-}
-
 /// Organization membership role (owner > admin > member).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -184,59 +156,13 @@ impl OrgRole {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConnectionProvider {
-    Notion,
-    GoogleDrive,
-    Onedrive,
-    Gmail,
-    Github,
-    WebCrawler,
-    S3,
-    Granola,
-}
-
-impl ConnectionProvider {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ConnectionProvider::Notion => "notion",
-            ConnectionProvider::GoogleDrive => "google-drive",
-            ConnectionProvider::Onedrive => "onedrive",
-            ConnectionProvider::Gmail => "gmail",
-            ConnectionProvider::Github => "github",
-            ConnectionProvider::WebCrawler => "web-crawler",
-            ConnectionProvider::S3 => "s3",
-            ConnectionProvider::Granola => "granola",
-        }
-    }
-    pub fn parse(s: &str) -> Option<Self> {
-        Some(match s {
-            "notion" => ConnectionProvider::Notion,
-            "google-drive" => ConnectionProvider::GoogleDrive,
-            "onedrive" => ConnectionProvider::Onedrive,
-            "gmail" => ConnectionProvider::Gmail,
-            "github" => ConnectionProvider::Github,
-            "web-crawler" => ConnectionProvider::WebCrawler,
-            "s3" => ConnectionProvider::S3,
-            "granola" => ConnectionProvider::Granola,
-            _ => return None,
-        })
-    }
-}
-
 /// Common document type constants (kept as `&str`; storage uses free text).
 pub mod doc_type {
     pub const TEXT: &str = "text";
     pub const MARKDOWN: &str = "md";
     pub const WEBPAGE: &str = "webpage";
-    pub const PDF: &str = "pdf";
     pub const CODE: &str = "code";
-    pub const IMAGE: &str = "image";
-    pub const VIDEO: &str = "video";
-    pub const AUDIO: &str = "audio";
     pub const JSON: &str = "json";
-    pub const CSV: &str = "csv";
     pub const TWEET: &str = "tweet";
     pub const YOUTUBE: &str = "youtube";
 }

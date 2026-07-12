@@ -318,15 +318,6 @@ impl Db {
         Ok(row.as_ref().map(map_memory))
     }
 
-    pub async fn mark_not_latest(&self, id: &str) -> Result<()> {
-        sqlx::query("UPDATE memories SET is_latest = false, updated_at = now() WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
     pub async fn insert_edge(
         &self,
         source: &str,
@@ -425,17 +416,6 @@ impl Db {
         Ok(rows.iter().map(map_memory).collect())
     }
 
-    pub async fn memories_for_document(&self, document_id: &str) -> Result<Vec<Memory>> {
-        let rows = sqlx::query(
-            "SELECT * FROM memories WHERE document_id = $1 AND is_latest ORDER BY created_at ASC",
-        )
-        .bind(document_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
-        Ok(rows.iter().map(map_memory).collect())
-    }
-
     /// Latest memories for each of `doc_ids`, grouped by document id.
     pub async fn memories_for_documents(
         &self,
@@ -511,38 +491,6 @@ impl Db {
             .await
             .map_err(db_err)?;
         Ok(row.as_ref().map(map_memory))
-    }
-
-    /// Insert a derived/inferred memory (flagged for review). Returns its id.
-    pub async fn insert_inferred(
-        &self,
-        org_id: &str,
-        container_tag: &str,
-        content: &str,
-        embedding: &[f32],
-        source_count: i32,
-        bucket_key: Option<&str>,
-    ) -> Result<String> {
-        let id = memoricai_core::ids::memory_id();
-        let now = chrono::Utc::now();
-        sqlx::query(
-            "INSERT INTO memories
-               (id, org_id, memory, space_container_tag, embedding, version, is_latest,
-                source_count, is_static, is_inference, is_forgotten, bucket_key, metadata, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5::vector,1,true,$6,false,true,false,$7,'{}',$8,$8)",
-        )
-        .bind(&id)
-        .bind(org_id)
-        .bind(content)
-        .bind(container_tag)
-        .bind(crate::pgvec(embedding))
-        .bind(source_count)
-        .bind(bucket_key)
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .map_err(db_err)?;
-        Ok(id)
     }
 
     /// Mark expired (`forget_after < now`) memories forgotten. Returns count.

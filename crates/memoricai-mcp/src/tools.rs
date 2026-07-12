@@ -44,7 +44,7 @@ pub fn list() -> Value {
         {
             "name": "listProjects",
             "description": "List the available projects (container tags).",
-            "inputSchema": {"type": "object", "properties": {"refresh": {"type": "boolean"}}}
+            "inputSchema": {"type": "object", "properties": {}}
         },
         {
             "name": "whoAmI",
@@ -124,7 +124,6 @@ fn search_request(q: String, tag: String, limit: u32, threshold: f32) -> MemoryS
         include: SearchInclude {
             documents: true,
             related_memories: true,
-            summaries: false,
             forgotten_memories: false,
         },
         digest: false,

@@ -116,7 +116,6 @@ export interface MemorySearchRequest {
   include?: {
     documents?: boolean;
     relatedMemories?: boolean;
-    summaries?: boolean;
     forgottenMemories?: boolean;
   };
   /** Compose a compact, date-stamped context digest alongside the results. */

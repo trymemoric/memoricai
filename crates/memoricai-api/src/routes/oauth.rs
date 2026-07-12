@@ -583,15 +583,16 @@ pub async fn session_with_key(
     state.auth.authorize_write(&ctx)?;
     let api_key = match state.auth.allowed_container_tags(&ctx) {
         None => {
+            // A bounded, revocable, rate-limited session key — never a permanent org key.
             state
                 .auth
-                .mint_org_key(&ctx.org.id, Some(&ctx.user.id), "mcp")
+                .mint_session_key(&ctx.org.id, Some(&ctx.user.id), "mcp", 30, 500, 60_000)
                 .await?
         }
         Some(tags) if tags.len() == 1 => {
             state
                 .auth
-                .mint_scoped_key(&ctx, &tags[0], Some("mcp"), None, 500, 60_000)
+                .mint_scoped_key(&ctx, &tags[0], Some("mcp"), Some(30), 500, 60_000)
                 .await?
                 .0
         }

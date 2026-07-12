@@ -24,6 +24,16 @@ pub const MAX_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 256 * 1024;
 const MAX_MEMORY_BYTES: usize = 10 * 1024;
 
+/// Aborts a spawned task when dropped — including during panic unwind — so a
+/// lease-heartbeat can never outlive the job it was renewing.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub(crate) fn validate_metadata(metadata: &serde_json::Value) -> Result<()> {
     if serde_json::to_vec(metadata)
         .map_err(|error| Error::BadRequest(format!("invalid metadata: {error}")))?
@@ -180,19 +190,21 @@ impl Engine {
                         interval.tick().await;
                         loop {
                             interval.tick().await;
-                            if heartbeat_engine
-                                .db
-                                .renew_document_lease(&heartbeat_doc_id)
-                                .await
-                                .is_err()
+                            // A single transient renewal error (e.g. momentary pool
+                            // exhaustion) must not silence the heartbeat for the rest of a
+                            // long stage; log and keep renewing.
+                            if let Err(error) =
+                                heartbeat_engine.db.renew_document_lease(&heartbeat_doc_id).await
                             {
-                                break;
+                                tracing::warn!(doc_id = %heartbeat_doc_id, %error, "lease renewal failed");
                             }
                         }
                     });
+                    // Created before process_document so a panic there still aborts the
+                    // heartbeat via unwind; explicitly dropped on the normal path below.
+                    let heartbeat_guard = AbortOnDrop(heartbeat);
                     let process_result = engine.process_document(&doc_id).await;
-                    heartbeat.abort();
-                    let _ = heartbeat.await;
+                    drop(heartbeat_guard);
                     if let Err(error) = process_result {
                         tracing::error!(doc_id, %error, "ingest failed");
                         let _ = engine

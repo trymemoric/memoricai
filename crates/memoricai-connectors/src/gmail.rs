@@ -47,16 +47,14 @@ impl Connector for Gmail {
         let client = http();
         let mut stats = SyncStats::default();
 
-        let list: Value = client
+        let resp = client
             .get("https://gmail.googleapis.com/gmail/v1/users/me/messages")
             .bearer_auth(token)
             .query(&[("maxResults", "50"), ("labelIds", "INBOX")])
             .send()
             .await
-            .map_err(net)?
-            .json()
-            .await
             .map_err(net)?;
+        let list: Value = crate::ensure_ok(resp).await?.json().await.map_err(net)?;
 
         let empty = vec![];
         for m in list["messages"].as_array().unwrap_or(&empty) {

@@ -20,7 +20,7 @@ impl Connector for GoogleDrive {
         let mut stats = SyncStats::default();
 
         let resp = client
-            .get("https://www.googleapis.com/drive/v1/files")
+            .get("https://www.googleapis.com/drive/v3/files")
             .bearer_auth(token)
             .query(&[
                 (
@@ -33,7 +33,7 @@ impl Connector for GoogleDrive {
             .send()
             .await
             .map_err(net)?;
-        let v: Value = resp.json().await.map_err(net)?;
+        let v: Value = crate::ensure_ok(resp).await?.json().await.map_err(net)?;
         let empty = vec![];
         for f in v["files"].as_array().unwrap_or(&empty) {
             let id = f["id"].as_str().unwrap_or_default();
@@ -43,7 +43,7 @@ impl Connector for GoogleDrive {
             let content = if mime.starts_with("application/vnd.google-apps") {
                 client
                     .get(format!(
-                        "https://www.googleapis.com/drive/v1/files/{id}/export"
+                        "https://www.googleapis.com/drive/v3/files/{id}/export"
                     ))
                     .bearer_auth(token)
                     .query(&[("mimeType", "text/plain")])
@@ -55,7 +55,7 @@ impl Connector for GoogleDrive {
                     .unwrap_or_default()
             } else if mime == "application/pdf" || mime.starts_with("text/") {
                 client
-                    .get(format!("https://www.googleapis.com/drive/v1/files/{id}"))
+                    .get(format!("https://www.googleapis.com/drive/v3/files/{id}"))
                     .bearer_auth(token)
                     .query(&[("alt", "media")])
                     .send()

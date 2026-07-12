@@ -38,7 +38,6 @@ pub async fn document_search_get(
         chunk_threshold: 0.5,
         document_threshold: 0.5,
         doc_id: None,
-        only_matching_chunks: true,
         include_full_docs: false,
         include_summary: false,
     };

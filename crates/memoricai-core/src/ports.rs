@@ -43,10 +43,6 @@ pub const CONTENT_MARKER: &str = "CONTENT:";
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     async fn complete(&self, messages: Vec<ChatMessage>, opts: ChatOptions) -> Result<String>;
-    /// Human-readable provider label (for diagnostics).
-    fn label(&self) -> &str {
-        "llm"
-    }
 }
 
 /// An embedding provider. Vectors MUST be returned L2-normalized.

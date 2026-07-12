@@ -1,9 +1,9 @@
 //! Document + chunk repository methods.
 
-use crate::{count_and_rows, db_err, map_chunk, map_document, pgvec, ChunkScore, Db};
+use crate::{count_and_rows, db_err, map_document, pgvec, ChunkScore, Db};
 use memoricai_core::enums::DocumentStatus;
 use memoricai_core::error::{Error, Result};
-use memoricai_core::model::{Chunk, Document};
+use memoricai_core::model::Document;
 use serde_json::Value;
 use sqlx::Row;
 use std::collections::HashMap;
@@ -281,18 +281,6 @@ impl Db {
         }
     }
 
-    pub async fn requeue_document(&self, id: &str) -> Result<()> {
-        sqlx::query(
-            "UPDATE documents SET status='queued', processing_attempts=0, lease_until=NULL,
-                    last_error=NULL, updated_at=now() WHERE id=$1",
-        )
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(db_err)?;
-        Ok(())
-    }
-
     /// Mark a document done and record summary + counts.
     pub async fn finish_document(
         &self,
@@ -521,20 +509,6 @@ impl Db {
         Ok((rows.iter().map(map_document).collect(), count as u64))
     }
 
-    pub async fn count_documents(&self, org_id: &str, tag: Option<&str>) -> Result<i64> {
-        let c: i64 = sqlx::query(
-            "SELECT count(*) AS c FROM documents WHERE org_id = $1
-             AND ($2::text IS NULL OR $2 = ANY(container_tags))",
-        )
-        .bind(org_id)
-        .bind(tag)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(db_err)?
-        .get("c");
-        Ok(c)
-    }
-
     pub async fn count_documents_for_connection(
         &self,
         org_id: &str,
@@ -567,62 +541,6 @@ impl Db {
     }
 
     // ---------- chunks ----------
-
-    pub async fn delete_chunks_for_document(&self, document_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM chunks WHERE document_id = $1")
-            .bind(document_id)
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
-    pub async fn insert_chunks(
-        &self,
-        document_id: &str,
-        org_id: &str,
-        container_tag: &str,
-        drafts: &[ChunkDraft],
-    ) -> Result<usize> {
-        if drafts.is_empty() {
-            return Ok(0);
-        }
-        let n = drafts.len();
-        let mut ids: Vec<String> = Vec::with_capacity(n);
-        let mut contents: Vec<&str> = Vec::with_capacity(n);
-        let mut chunk_types: Vec<&str> = Vec::with_capacity(n);
-        let mut positions: Vec<i32> = Vec::with_capacity(n);
-        let mut embeddings: Vec<String> = Vec::with_capacity(n);
-        let mut metadatas: Vec<&Value> = Vec::with_capacity(n);
-        for (content, position, chunk_type, embedding, metadata) in drafts {
-            ids.push(memoricai_core::ids::chunk_id());
-            contents.push(content);
-            chunk_types.push(chunk_type);
-            positions.push(*position);
-            embeddings.push(pgvec(embedding));
-            metadatas.push(metadata);
-        }
-        sqlx::query(
-            r#"INSERT INTO chunks
-               (id, document_id, org_id, space_container_tag, content, chunk_type, position, embedding, metadata)
-               SELECT t.id, $2, $3, $4, t.content, t.chunk_type, t.position, t.embedding::vector, t.metadata
-               FROM unnest($1::text[], $5::text[], $6::text[], $7::int4[], $8::text[], $9::jsonb[])
-                    AS t(id, content, chunk_type, position, embedding, metadata)"#,
-        )
-        .bind(&ids)
-        .bind(document_id)
-        .bind(org_id)
-        .bind(container_tag)
-        .bind(&contents)
-        .bind(&chunk_types)
-        .bind(&positions)
-        .bind(&embeddings)
-        .bind(&metadatas)
-        .execute(&self.pool)
-        .await
-        .map_err(db_err)?;
-        Ok(n)
-    }
 
     /// Atomically replace every chunk copy for all of a document's container tags.
     pub async fn replace_chunks_for_document(
@@ -684,16 +602,6 @@ impl Db {
         Ok(count)
     }
 
-    /// All chunks for a document, ordered by position.
-    pub async fn document_chunks(&self, document_id: &str) -> Result<Vec<Chunk>> {
-        let rows = sqlx::query("SELECT * FROM chunks WHERE document_id = $1 ORDER BY position ASC")
-            .bind(document_id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.iter().map(map_chunk).collect())
-    }
-
     pub async fn search_chunks(
         &self,
         org_id: &str,
@@ -704,15 +612,16 @@ impl Db {
         doc_id: Option<&str>,
     ) -> Result<Vec<ChunkScore>> {
         let rows = sqlx::query(
-            r#"SELECT document_id, content, position, chunk_type,
-                      1 - (embedding <=> $1::vector) AS similarity
-               FROM chunks
-               WHERE org_id = $2
-                 AND ($3::text[] IS NULL OR space_container_tag = ANY($3))
-                 AND ($4::text IS NULL OR document_id = $4)
-                 AND embedding IS NOT NULL
-                 AND 1 - (embedding <=> $1::vector) >= $5
-               ORDER BY embedding <=> $1::vector
+            r#"SELECT c.document_id, c.content, d.metadata AS doc_metadata,
+                      1 - (c.embedding <=> $1::vector) AS similarity
+               FROM chunks c
+               JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id
+               WHERE c.org_id = $2
+                 AND ($3::text[] IS NULL OR c.space_container_tag = ANY($3))
+                 AND ($4::text IS NULL OR c.document_id = $4)
+                 AND c.embedding IS NOT NULL
+                 AND 1 - (c.embedding <=> $1::vector) >= $5
+               ORDER BY c.embedding <=> $1::vector
                LIMIT $6"#,
         )
         .bind(pgvec(qvec))
@@ -730,8 +639,7 @@ impl Db {
             .map(|row| ChunkScore {
                 document_id: row.get("document_id"),
                 content: row.get("content"),
-                position: row.get("position"),
-                chunk_type: row.get("chunk_type"),
+                doc_metadata: row.get("doc_metadata"),
                 similarity: row.get::<f64, _>("similarity") as f32,
             })
             .collect())

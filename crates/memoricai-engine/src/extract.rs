@@ -9,7 +9,6 @@ use url::Url;
 
 pub struct Extracted {
     pub text: String,
-    pub title: Option<String>,
 }
 
 /// Heuristic content-type detection from the raw content + optional title.
@@ -67,7 +66,7 @@ fn looks_like_code(s: &str) -> bool {
     hits >= 2
 }
 
-/// Extract plain text (and a title) from a document's raw content.
+/// Extract plain text from a document's raw content.
 pub async fn extract(doc_type: &str, content: &str, url: Option<&str>) -> Result<Extracted> {
     match doc_type {
         "webpage" | "youtube" | "tweet" => {
@@ -77,13 +76,11 @@ pub async fn extract(doc_type: &str, content: &str, url: Option<&str>) -> Result
             } else {
                 Ok(Extracted {
                     text: content.to_string(),
-                    title: None,
                 })
             }
         }
         _ => Ok(Extracted {
             text: content.to_string(),
-            title: None,
         }),
     }
 }
@@ -219,15 +216,9 @@ pub static BODY_SEL: std::sync::LazyLock<Selector> = std::sync::LazyLock::new(||
     Selector::parse("p, h1, h2, h3, h4, li, blockquote, pre, td").unwrap()
 });
 
-/// Very small readability: drop script/style/nav, collect visible text + <title>.
+/// Very small readability: drop script/style/nav, collect visible text.
 pub fn html_to_text(html: &str) -> Extracted {
     let doc = Html::parse_document(html);
-    let title = Selector::parse("title")
-        .ok()
-        .and_then(|sel| doc.select(&sel).next())
-        .map(|el| el.text().collect::<String>().trim().to_string())
-        .filter(|s| !s.is_empty());
-
     let mut parts: Vec<String> = Vec::new();
     for el in doc.select(&BODY_SEL) {
         let t = el.text().collect::<String>();
@@ -249,7 +240,7 @@ pub fn html_to_text(html: &str) -> Extracted {
     } else {
         parts.join("\n\n")
     };
-    Extracted { text, title }
+    Extracted { text }
 }
 
 /// Extract text from PDF bytes (used by the file-upload endpoint).

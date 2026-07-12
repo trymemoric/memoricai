@@ -371,7 +371,10 @@ impl Engine {
         // Fall back to / include document chunks.
         if (mode == "hybrid" && results.len() < req.limit as usize) || mode == "documents" {
             let tags = tag.map(|t| vec![t.to_string()]);
-            let mut seen: HashMap<String, f32> = HashMap::new();
+            // Keep the best-scoring chunk per distinct content, retaining its source
+            // document's metadata so the metadata filter can be applied (previously
+            // chunk hits were pushed unfiltered with empty metadata).
+            let mut seen: HashMap<String, (f32, serde_json::Value)> = HashMap::new();
             let chunk_batches = futures::future::try_join_all(qvecs.iter().map(|qvec| {
                 self.db.search_chunks(
                     org_id,
@@ -385,17 +388,26 @@ impl Engine {
             .await?;
             for chunk_hits in chunk_batches {
                 for ch in chunk_hits {
-                    let e = seen.entry(ch.content).or_insert(0.0);
-                    *e = e.max(ch.similarity);
+                    let entry = seen
+                        .entry(ch.content)
+                        .or_insert((f32::NEG_INFINITY, serde_json::Value::Null));
+                    if ch.similarity > entry.0 {
+                        *entry = (ch.similarity, ch.doc_metadata);
+                    }
                 }
             }
-            for (content, sim) in seen {
+            for (content, (sim, metadata)) in seen {
+                if let Some(f) = &filter {
+                    if !f.matches(&metadata) {
+                        continue;
+                    }
+                }
                 results.push(MemorySearchResult {
                     id: memoricai_core::ids::token(10),
                     memory: None,
                     chunk: Some(content),
                     similarity: sim,
-                    metadata: serde_json::json!({}),
+                    metadata,
                     updated_at: chrono::Utc::now(),
                     version: 0,
                     root_memory_id: None,

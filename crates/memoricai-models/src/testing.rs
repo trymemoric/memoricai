@@ -15,10 +15,6 @@ pub struct DeterministicLlm;
 
 #[async_trait]
 impl LlmProvider for DeterministicLlm {
-    fn label(&self) -> &str {
-        "test-deterministic"
-    }
-
     async fn complete(&self, messages: Vec<ChatMessage>, opts: ChatOptions) -> Result<String> {
         let last_user = messages
             .iter()

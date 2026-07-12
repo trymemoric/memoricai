@@ -31,8 +31,5 @@ anyhow = { workspace = true }
 # keep the standard binary slim; enable with --features local-embeddings.
 local-embeddings = ["memoricai-models/local-embeddings"]
 
-[dev-dependencies]
-serde_json = { workspace = true }
-
 [lints]
 workspace = true

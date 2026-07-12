@@ -26,7 +26,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 pub use memoricai_core::dto::{
-    BulkDeleteResponse, CreateMemoriesRequest, CreateMemoriesResponse, DocumentListRequest,
+    CreateMemoriesRequest, CreateMemoriesResponse, DocumentListRequest,
     DocumentListResponse, DocumentSearchRequest, DocumentSearchResponse, ForgetMatchingRequest,
     ForgetMatchingResponse, ForgetRequest, IngestRequest, IngestResponse, MemoryInput,
     MemorySearchRequest, MemorySearchResponse, PatchMemoryRequest, ProfileRequest, ProfileResponse,

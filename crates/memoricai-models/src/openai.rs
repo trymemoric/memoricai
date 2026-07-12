@@ -50,10 +50,6 @@ impl OpenAiChat {
 
 #[async_trait]
 impl LlmProvider for OpenAiChat {
-    fn label(&self) -> &str {
-        "openai-compatible"
-    }
-
     async fn complete(&self, messages: Vec<ChatMessage>, opts: ChatOptions) -> Result<String> {
         let model = opts.model.as_deref().unwrap_or(&self.model);
         let mut body = json!({
@@ -91,6 +87,11 @@ impl LlmProvider for OpenAiChat {
     }
 }
 
+/// OpenAI caps `/embeddings` at 2048 inputs (plus a per-request token budget); stay
+/// well under both so a large document's chunks aren't sent as one oversized request
+/// that the provider rejects with a 400.
+const MAX_EMBED_INPUTS: usize = 128;
+
 pub struct OpenAiEmbedder {
     base_url: String,
     api_key: Option<String>,
@@ -114,18 +115,9 @@ impl OpenAiEmbedder {
             http: client(),
         }
     }
-}
 
-#[async_trait]
-impl EmbeddingProvider for OpenAiEmbedder {
-    fn dim(&self) -> usize {
-        self.dim
-    }
-
-    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(vec![]);
-        }
+    /// Embed a single request's worth of inputs (caller must bound the count).
+    async fn embed_request(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let body = json!({"model": self.model, "input": texts});
         let mut req = self
             .http
@@ -196,5 +188,130 @@ impl EmbeddingProvider for OpenAiEmbedder {
                 embedding.ok_or_else(|| Error::Model("embedding response omitted an index".into()))
             })
             .collect()
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for OpenAiEmbedder {
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let mut out = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(MAX_EMBED_INPUTS) {
+            out.extend(self.embed_request(batch).await?);
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    const DIM: usize = 4;
+
+    /// Read one HTTP request off `socket` and return the number of entries in its
+    /// JSON body's `input` array.
+    async fn read_input_count(socket: &mut tokio::net::TcpStream) -> usize {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        // Read until headers complete, then until the full Content-Length body arrives.
+        let mut content_length: Option<usize> = None;
+        let mut header_end: Option<usize> = None;
+        loop {
+            if header_end.is_none() {
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    header_end = Some(pos + 4);
+                    let headers = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
+                    for line in headers.lines() {
+                        if let Some(v) = line.strip_prefix("content-length:") {
+                            content_length = v.trim().parse().ok();
+                        }
+                    }
+                }
+            }
+            if let (Some(he), Some(cl)) = (header_end, content_length) {
+                if buf.len() >= he + cl {
+                    let body = &buf[he..he + cl];
+                    let v: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    return v["input"].as_array().map(|a| a.len()).unwrap_or(0);
+                }
+            }
+            let n = socket.read(&mut tmp).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+        }
+        0
+    }
+
+    async fn respond(socket: &mut tokio::net::TcpStream, n: usize) {
+        let data: Vec<serde_json::Value> = (0..n)
+            .map(|i| json!({"index": i, "embedding": vec![0.5_f32; DIM]}))
+            .collect();
+        let body = serde_json::to_vec(&json!({ "data": data })).unwrap();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        socket.write_all(head.as_bytes()).await.unwrap();
+        socket.write_all(&body).await.unwrap();
+        socket.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn embed_batch_splits_large_input_into_capped_requests() {
+        // Bind first so connections queue even before `accept` is called.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let per_request: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = per_request.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let count = read_input_count(&mut socket).await;
+                seen.lock().unwrap().push(count);
+                respond(&mut socket, count).await;
+            }
+        });
+
+        let embedder = OpenAiEmbedder::new(format!("http://{addr}"), None, "test-model", DIM);
+        let inputs: Vec<String> = (0..300).map(|i| format!("chunk {i}")).collect();
+        let out = embedder.embed_batch(&inputs).await.unwrap();
+
+        // Every input got exactly one vector back, in order.
+        assert_eq!(out.len(), 300);
+        assert!(out.iter().all(|v| v.len() == DIM));
+
+        let counts = per_request.lock().unwrap().clone();
+        // 300 inputs at a 128 cap => three requests of 128, 128, 44.
+        assert_eq!(counts, vec![128, 128, 44]);
+        assert!(
+            counts.iter().all(|&c| c <= MAX_EMBED_INPUTS),
+            "a request exceeded the input cap: {counts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_batch_empty_makes_no_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hit = Arc::new(Mutex::new(false));
+        let flag = hit.clone();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+            *flag.lock().unwrap() = true;
+        });
+        let embedder = OpenAiEmbedder::new(format!("http://{addr}"), None, "m", DIM);
+        let out = embedder.embed_batch(&[]).await.unwrap();
+        assert!(out.is_empty());
+        assert!(!*hit.lock().unwrap(), "empty input must not hit the network");
     }
 }

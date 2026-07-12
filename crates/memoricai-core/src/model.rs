@@ -96,14 +96,6 @@ pub struct Memory {
     pub updated_at: Timestamp,
 }
 
-/// A directed edge in the memory graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MemoryEdge {
-    pub source_memory_id: String,
-    pub target_memory_id: String,
-    pub relation: MemoryRelation,
-}
 
 /// A RAG chunk of a document.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -183,9 +183,11 @@ impl Db {
     }
 
     pub async fn revoke_key(&self, org_id: &str, id: &str) -> Result<bool> {
+        // Full org/root keys (`key_type = 'org'`) are intentionally not revocable via
+        // the API; scoped keys and MCP session keys are.
         let r = sqlx::query(
             "UPDATE api_keys SET revoked = true
-             WHERE org_id = $1 AND id = $2 AND key_type = 'scoped'",
+             WHERE org_id = $1 AND id = $2 AND key_type IN ('scoped', 'session')",
         )
         .bind(org_id)
         .bind(id)

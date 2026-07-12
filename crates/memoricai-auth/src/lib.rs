@@ -104,6 +104,42 @@ impl AuthService {
         Ok(display)
     }
 
+    /// Mint a full-access but *bounded* key for an MCP session: revocable
+    /// (`key_type = 'session'`), rate-limited, and expiring. Unlike [`Self::mint_org_key`]
+    /// this must never produce a permanent, unlimited, irrevocable credential.
+    pub async fn mint_session_key(
+        &self,
+        org_id: &str,
+        user_id: Option<&str>,
+        name: &str,
+        expires_in_days: i64,
+        rate_limit_max: i32,
+        rate_limit_window_ms: i64,
+    ) -> Result<String> {
+        let display = memoricai_core::ids::org_api_key(org_id);
+        let prefix =
+            key_prefix(&display).ok_or_else(|| Error::Internal("bad key format".into()))?;
+        let record = ApiKeyRecord {
+            id: memoricai_core::ids::api_key_id(),
+            key_hash: hash_key(&display)?,
+            prefix,
+            last4: last4(&display),
+            org_id: org_id.to_string(),
+            user_id: user_id.map(|s| s.to_string()),
+            name: name.to_string(),
+            key_type: "session".into(),
+            container_tag: None,
+            allowed_endpoints: None,
+            rate_limit_max,
+            rate_limit_window_ms,
+            expires_at: Some(Utc::now() + chrono::Duration::days(expires_in_days)),
+            revoked: false,
+            created_at: Utc::now(),
+        };
+        self.db.insert_api_key(&record).await?;
+        Ok(display)
+    }
+
     /// Mint a container-scoped key. Requires a full org key context.
     pub async fn mint_scoped_key(
         &self,

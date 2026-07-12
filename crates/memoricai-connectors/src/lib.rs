@@ -528,6 +528,27 @@ pub(crate) fn net(e: reqwest::Error) -> Error {
     Error::Model(e.to_string())
 }
 
+/// Reject a non-2xx provider response instead of parsing its error body as data.
+///
+/// Without this, an `{"message":"Bad credentials"}` / `{"error":{...}}` body parses
+/// as valid JSON, the expected array is absent, and the sync loop reports a
+/// "completed" run of zero items — silently masking auth failures and rate limits.
+pub(crate) async fn ensure_ok(resp: reqwest::Response) -> Result<reqwest::Response> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let body = resp.text().await.unwrap_or_default();
+    let snippet: String = body.chars().take(200).collect();
+    Err(match status.as_u16() {
+        401 | 403 => Error::Unauthorized(format!(
+            "connector credentials rejected by provider ({status})"
+        )),
+        429 => Error::RateLimited,
+        _ => Error::Model(format!("connector request failed ({status}): {snippet}")),
+    })
+}
+
 pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut s = String::with_capacity(bytes.len() * 2);

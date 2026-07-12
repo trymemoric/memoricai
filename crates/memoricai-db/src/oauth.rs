@@ -194,16 +194,6 @@ impl Db {
         Ok(row.as_ref().map(map_token))
     }
 
-    pub async fn get_oauth_token_by_refresh(&self, refresh: &str) -> Result<Option<OAuthToken>> {
-        let row =
-            sqlx::query("SELECT * FROM oauth_tokens WHERE refresh_token = $1 AND NOT revoked")
-                .bind(refresh)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db_err)?;
-        Ok(row.as_ref().map(map_token))
-    }
-
     /// Atomically rotate a live refresh token belonging to the authenticated client.
     pub async fn take_oauth_token_by_refresh(
         &self,
@@ -223,12 +213,4 @@ impl Db {
         Ok(row.as_ref().map(map_token))
     }
 
-    pub async fn revoke_oauth_token(&self, access_token: &str) -> Result<()> {
-        sqlx::query("UPDATE oauth_tokens SET revoked = true WHERE access_token = $1")
-            .bind(access_token)
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
 }

@@ -28,17 +28,15 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 async fn gh_get(client: &reqwest::Client, token: &str, url: &str) -> Result<Value> {
-    client
+    let resp = client
         .get(url)
         .bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
         .await
-        .map_err(net)?
-        .json()
-        .await
-        .map_err(net)
+        .map_err(net)?;
+    crate::ensure_ok(resp).await?.json().await.map_err(net)
 }
 
 impl GitHub {
