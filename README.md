@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/memoricai-m-logo.svg" alt="memoricai logo" width="96" height="96">
+
 # memoricai
 
 **A memory & context engine for AI agents, one self-hostable Rust binary.**
@@ -28,13 +30,12 @@ The only hard dependency is **Postgres with pgvector**. The model layer speaks t
 
 ## Features
 
-- **Ingestion pipeline**, durable Postgres-backed jobs with lease recovery and bounded retries; content-type detection, extraction (HTML/URL, PDF, code, optional image captioning and audio/video transcription), configurable chunking, embedding, LLM memory extraction, relation inference with version chains (`updates` / `extends` edges), and per-memory expiry handled by a background sweeper.
-- **Search**, chunk-level RAG (`/v1/documents/search`) and memory-graph search (`/v1/search`) with three modes (`memories`, `hybrid`, `documents`), optional LLM query rewriting, reranking (remote rerank endpoint if configured, LLM-based otherwise), and an optional `digest: true` mode that composes the top matching memories into a compact, date-stamped, ready-to-inject context block.
-- **Profiles**, static/dynamic/bucketed user profiles served from a fast path (`/v1/profile`), aggregated periodically in the background.
-- **Multi-tenancy & auth**, organizations, `mc_`-prefixed API keys, container-scoped keys with rate limits, and a built-in OAuth2/OIDC provider (PKCE, refresh tokens, dynamic client registration) used by MCP clients.
-- **Connectors**, Google Drive, Gmail, Notion, OneDrive, GitHub (push webhooks), Granola, S3-compatible object stores, and an SSRF-guarded web crawler, with a per-run sync ledger.
-- **Memory Router**, an OpenAI-compatible proxy that injects relevant memories into chat requests before forwarding them upstream.
-- **Analytics**, request usage, error rates, and paginated request logs per organization.
+- **Ingestion pipeline**, turns text, URLs, documents, code, images, and audio/video into embedded atomic memories using durable Postgres-backed jobs with retries, versioning, relations, and expiry.
+- **Search**, combines chunk-level RAG with graph-aware memory search across `memories`, `hybrid`, and `documents` modes, with optional query rewriting, reranking, and ready-to-inject context digests.
+- **Profiles**, builds static, dynamic, and bucketed user profiles in the background and serves them through a fast lookup path.
+- **Multi-tenancy & auth**, isolates organizations with API keys, rate-limited scoped keys, and a built-in OAuth2/OIDC provider for MCP clients.
+- **Connectors**, syncs Google Drive, Gmail, Notion, OneDrive, GitHub, Granola, S3-compatible stores, and guarded web crawls with per-run tracking.
+- **Memory Router**, injects relevant memories into OpenAI-compatible chat requests before forwarding them to the upstream model.
 
 ## Benchmarks
 
