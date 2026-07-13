@@ -1,6 +1,6 @@
 # memoricai-client
 
-Rust SDK for [memoricai](https://github.com/skundu42/memoricai), a self-hostable
+Rust SDK for [memoricai](https://github.com/trymemoric/memoricai), a self-hostable
 memory & context engine for AI agents (one Rust binary + Postgres/pgvector).
 
 ```rust

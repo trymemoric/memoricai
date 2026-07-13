@@ -90,7 +90,7 @@ docker run -d --name memoricai-pg -e POSTGRES_PASSWORD=postgres \
 #   brew install postgresql@16 pgvector && brew services start postgresql@16
 #   createdb memoricai && psql -d memoricai -c 'CREATE EXTENSION IF NOT EXISTS vector;'
 
-# 2. Build (or: docker pull ghcr.io/skundu42/memoricai:latest)
+# 2. Build (or: docker pull ghcr.io/trymemoric/memoricai:latest)
 cargo build --release
 
 # 3. Point it at your models (any OpenAI-compatible endpoint; see Model configuration)
