@@ -20,7 +20,7 @@ import urllib.request
 from typing import Any, Optional
 
 __all__ = ["Client", "MemoricaiError", "ProcessingTimeout"]
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 
 class MemoricaiError(Exception):
