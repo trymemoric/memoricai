@@ -409,7 +409,7 @@ async fn authenticate_client(
     if let Some(expected) = &client.client_secret {
         let supplied =
             client_secret.ok_or_else(|| ApiError(Error::Unauthorized("invalid_client".into())))?;
-        // The stored secret is a SHA-256 hash. Startup migrates legacy plaintext rows.
+        // The stored secret is a SHA-256 hash.
         let hashed = memoricai_db::crypto::hash_token(supplied);
         if !constant_time_eq(expected, &hashed) {
             return Err(ApiError(Error::Unauthorized("invalid_client".into())));

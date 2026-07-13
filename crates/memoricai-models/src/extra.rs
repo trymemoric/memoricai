@@ -1,4 +1,4 @@
-//! Phase 2 model capabilities: reranking, transcription, and vision — all via
+//! Optional model capabilities: reranking, transcription, and vision — all via
 //! remote (OpenAI-compatible / TEI-style) endpoints or the existing LLM, so no
 //! native ML dependencies are pulled in.
 

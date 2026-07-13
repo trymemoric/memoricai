@@ -141,6 +141,11 @@ pub struct Engine {
     tx: mpsc::Sender<()>,
     sem: Arc<Semaphore>,
     query_cache: Arc<std::sync::Mutex<QueryEmbeddingCache>>,
+    embedding_indexes: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, memoricai_db::embeddings::EmbeddingIndex>,
+        >,
+    >,
 }
 
 impl Engine {
@@ -156,10 +161,159 @@ impl Engine {
             tx,
             sem,
             query_cache: Arc::new(std::sync::Mutex::new(QueryEmbeddingCache::new(512))),
+            embedding_indexes: Arc::new(std::sync::Mutex::new(Default::default())),
         };
         let dispatcher = engine.clone();
         tokio::spawn(async move { dispatcher.dispatch_loop(rx).await });
+        let backfiller = engine.clone();
+        tokio::spawn(async move { backfiller.embedding_backfill_loop().await });
         engine
+    }
+
+    /// Resolve this process's configured embedding vector space for one tenant.
+    /// The exact index id is passed to every vector read and write.
+    pub(crate) async fn embedding_index(
+        &self,
+        org_id: &str,
+    ) -> Result<memoricai_db::embeddings::EmbeddingIndex> {
+        if let Some(index) = self
+            .embedding_indexes
+            .lock()
+            .ok()
+            .and_then(|indexes| indexes.get(org_id).cloned())
+        {
+            return Ok(index);
+        }
+        let model = &self.models.embedding_model;
+        let index = self
+            .db
+            .ensure_embedding_index(
+                org_id,
+                &model.model_id,
+                &model.version,
+                &model.provider,
+                model.dimension,
+            )
+            .await?;
+        if let Ok(mut indexes) = self.embedding_indexes.lock() {
+            indexes.insert(org_id.to_string(), index.clone());
+        }
+        Ok(index)
+    }
+
+    /// Discover tenants and advance durable re-embedding batches fairly.
+    /// Jobs are fenced by leases, so multiple server replicas can run this loop.
+    async fn embedding_backfill_loop(self) {
+        let mut poll = tokio::time::interval(std::time::Duration::from_millis(500));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut discovery = tokio::time::interval(std::time::Duration::from_secs(60));
+        discovery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = discovery.tick() => {
+                    match self.db.organization_ids().await {
+                        Ok(org_ids) => {
+                            for org_id in org_ids {
+                                match self.embedding_index(&org_id).await {
+                                    Ok(index) => {
+                                        if let Err(error) = self
+                                            .db
+                                            .queue_embedding_backfill(&org_id, &index.id)
+                                            .await
+                                        {
+                                            tracing::warn!(%org_id, %error, "failed to reconcile embedding backfill");
+                                        }
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(%org_id, %error, "failed to resolve embedding index");
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => tracing::warn!(%error, "failed to discover embedding indexes"),
+                    }
+                }
+                _ = poll.tick() => {
+                    let model = &self.models.embedding_model;
+                    let claimed = self.db.claim_embedding_backfill_for_model(
+                        &model.model_id,
+                        &model.version,
+                        &model.provider,
+                        model.dimension,
+                    ).await;
+                    let (index, token) = match claimed {
+                        Ok(Some(claimed)) => claimed,
+                        Ok(None) => continue,
+                        Err(error) => {
+                            tracing::warn!(%error, "failed to claim embedding backfill");
+                            continue;
+                        }
+                    };
+                    if let Err(error) = self.run_embedding_backfill_batch(&index, &token).await {
+                        tracing::warn!(index_id = %index.id, %error, "embedding backfill batch failed");
+                        let _ = self
+                            .db
+                            .fail_embedding_backfill(&index.id, &token, &error.to_string())
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn run_embedding_backfill_batch(
+        &self,
+        index: &memoricai_db::embeddings::EmbeddingIndex,
+        lease_token: &str,
+    ) -> Result<()> {
+        const BATCH_SIZE: i64 = 64;
+        if index.dimension != self.models.dim() {
+            return Err(Error::Model(format!(
+                "backfill index dimension {} does not match loaded model dimension {}",
+                index.dimension,
+                self.models.dim()
+            )));
+        }
+        let batch = self.db.embedding_backfill_batch(index, BATCH_SIZE).await?;
+        let memory_ids: Vec<String> = batch.memories.iter().map(|(id, _)| id.clone()).collect();
+        let memory_texts: Vec<String> = batch
+            .memories
+            .into_iter()
+            .map(|(_, content)| content)
+            .collect();
+        let chunk_ids: Vec<String> = batch.chunks.iter().map(|(id, _)| id.clone()).collect();
+        let chunk_texts: Vec<String> = batch
+            .chunks
+            .into_iter()
+            .map(|(_, content)| content)
+            .collect();
+        let memory_embeddings = self.models.embedder.embed_batch(&memory_texts).await?;
+        validate_embedding_batch(&memory_texts, &memory_embeddings, index.dimension)?;
+        let chunk_embeddings = self.models.embedder.embed_batch(&chunk_texts).await?;
+        validate_embedding_batch(&chunk_texts, &chunk_embeddings, index.dimension)?;
+        let complete = memory_ids.is_empty() && chunk_ids.is_empty();
+        self.db
+            .finish_embedding_backfill_batch(
+                &index.id,
+                lease_token,
+                &memory_ids,
+                &memory_embeddings,
+                &chunk_ids,
+                &chunk_embeddings,
+            )
+            .await?;
+        if complete {
+            tracing::info!(
+                org_id = %index.org_id,
+                index_id = %index.id,
+                provider = %index.provider,
+                model = %index.embedding_model_id,
+                version = %index.model_version,
+                dimension = index.dimension,
+                "embedding backfill complete"
+            );
+        }
+        Ok(())
     }
 
     /// Claim durable jobs from Postgres and process them with bounded concurrency.
@@ -513,6 +667,7 @@ impl Engine {
         let texts: Vec<String> = req.memories.iter().map(|m| m.content.clone()).collect();
         let embeddings = self.models.embedder.embed_batch(&texts).await?;
         validate_embedding_batch(&texts, &embeddings, self.models.dim())?;
+        let embedding_index = self.embedding_index(org_id).await?;
         let now: Timestamp = chrono::Utc::now();
         let mut created = Vec::with_capacity(req.memories.len());
         for (input, emb) in req.memories.iter().zip(embeddings.iter()) {
@@ -547,7 +702,9 @@ impl Engine {
                 created_at: now,
                 updated_at: now,
             };
-            self.db.insert_memory(&mem, emb).await?;
+            self.db
+                .insert_memory(&mem, &embedding_index.id, emb)
+                .await?;
             created.push(CreatedMemory {
                 id: mem.id,
                 memory: mem.memory,

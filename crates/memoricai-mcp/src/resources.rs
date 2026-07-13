@@ -80,6 +80,6 @@ fn contents_text(uri: &str, mime: &str, text: String) -> Value {
     json!({ "contents": [{"uri": uri, "mimeType": mime, "text": text}] })
 }
 
-/// Phase 1 placeholder for the interactive graph app (the full force-graph HTML
+/// Minimal placeholder for the interactive graph app (the full force-graph HTML
 /// is deferred; this keeps the resource wire-shape correct).
-const GRAPH_APP_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Memory Graph</title></head><body><main id="app"><p>memoricai memory graph (Phase 1 placeholder). Use the <code>fetch-graph-data</code> tool for data.</p></main></body></html>"#;
+const GRAPH_APP_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Memory Graph</title></head><body><main id="app"><p>memoricai memory graph placeholder. Use the <code>fetch-graph-data</code> tool for data.</p></main></body></html>"#;

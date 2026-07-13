@@ -33,7 +33,7 @@ struct ExtractionOut {
     memories: Vec<ExtractedFact>,
 }
 
-// Similarity thresholds for relation inference (design.md §5, tunable in Phase 2).
+// Similarity thresholds for relation inference (design.md §5).
 const UPDATE_THRESHOLD: f32 = 0.97;
 const EXTEND_THRESHOLD: f32 = 0.85;
 
@@ -197,13 +197,21 @@ impl Engine {
         embedding: &[f32],
     ) -> Result<String> {
         crate::validate_embedding(embedding, self.models.dim())?;
+        let embedding_index = self.embedding_index(org_id).await?;
         let now: Timestamp = chrono::Utc::now();
         let new_id = memoricai_core::ids::memory_id();
 
         // Find the nearest existing memory to decide the relation.
         let neighbors = self
             .db
-            .neighbor_memories(org_id, container_tag, embedding, 3, &new_id)
+            .neighbor_memories(
+                org_id,
+                &embedding_index.id,
+                container_tag,
+                embedding,
+                3,
+                &new_id,
+            )
             .await?;
         let top = neighbors.first();
 
@@ -260,15 +268,19 @@ impl Engine {
         };
         if let Some(prev_id) = supersede {
             self.db
-                .replace_latest_memory(&prev_id, &mem, embedding)
+                .replace_latest_memory(&prev_id, &mem, &embedding_index.id, embedding)
                 .await?;
         } else if let (Some(hit), Some(MemoryRelation::Extends)) = (top, relation) {
-            self.db.insert_memory(&mem, embedding).await?;
+            self.db
+                .insert_memory(&mem, &embedding_index.id, embedding)
+                .await?;
             self.db
                 .insert_edge(&hit.memory.id, &new_id, MemoryRelation::Extends)
                 .await?;
         } else {
-            self.db.insert_memory(&mem, embedding).await?;
+            self.db
+                .insert_memory(&mem, &embedding_index.id, embedding)
+                .await?;
         }
         Ok(new_id)
     }
@@ -496,6 +508,7 @@ impl Engine {
         let now: Timestamp = chrono::Utc::now();
         let embedding = self.models.embedder.embed(&req.new_content).await?;
         crate::validate_embedding(&embedding, self.models.dim())?;
+        let embedding_index = self.embedding_index(org_id).await?;
         let new_id = memoricai_core::ids::memory_id();
         let root = target
             .root_memory_id
@@ -533,7 +546,7 @@ impl Engine {
             updated_at: now,
         };
         self.db
-            .replace_latest_memory(&target.id, &mem, &embedding)
+            .replace_latest_memory(&target.id, &mem, &embedding_index.id, &embedding)
             .await?;
         Ok(mem)
     }

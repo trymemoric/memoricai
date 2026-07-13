@@ -510,7 +510,7 @@ impl AuthService {
         }
     }
 
-    /// Backward-compatible combined endpoint + optional-container check.
+    /// Authorize an endpoint and, when supplied, its container scope.
     pub fn authorize(
         &self,
         ctx: &AuthContext,

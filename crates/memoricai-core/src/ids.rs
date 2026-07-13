@@ -52,6 +52,9 @@ pub fn request_id() -> String {
 pub fn batch_id() -> String {
     mk_id("fb_")
 }
+pub fn embedding_index_id() -> String {
+    mk_id("eidx_")
+}
 
 /// Mint an org-scoped API key display string: `mc_<orgId>_<random>`.
 /// `org_id` is used verbatim after stripping any `org_` prefix so the key stays parseable.

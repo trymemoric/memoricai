@@ -280,7 +280,7 @@ pub fn build_router(state: AppState) -> Router {
         // discovery / misc
         .route("/v1/openapi", get(misc::openapi))
         .route("/health", get(misc::health))
-        // Phase 2/3 feature routers (self-contained sub-routers).
+        // Feature routers (self-contained sub-routers).
         .merge(routes::analytics::routes())
         .merge(routes::buckets::routes())
         .merge(routes::inferred::routes())

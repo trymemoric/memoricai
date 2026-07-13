@@ -42,6 +42,10 @@ async fn ingest_search_profile_end_to_end() {
             chunk_chars: 400,
         },
     );
+    let embedding_index = db
+        .ensure_embedding_index(&org.id, "hash-embedder", "test-v1", "memoricai-test", 64)
+        .await
+        .expect("embedding index");
 
     // Ingest (accept-instantly) then let the background worker finish.
     let req = IngestRequest {
@@ -73,6 +77,73 @@ async fn ingest_search_profile_end_to_end() {
         }
     }
     assert!(done, "document did not reach done status");
+
+    // Every vector is tied to an exact model index.
+    assert_eq!(embedding_index.embedding_model_id, "hash-embedder");
+    assert_eq!(embedding_index.model_version, "test-v1");
+    assert_eq!(embedding_index.provider, "memoricai-test");
+    assert_eq!(embedding_index.dimension, 64);
+    let memory_vector_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM memory_embeddings e
+         JOIN memories m ON m.id=e.memory_id
+         WHERE e.index_id=$1 AND m.document_id=$2",
+    )
+    .bind(&embedding_index.id)
+    .bind(&id)
+    .fetch_one(&db.pool)
+    .await
+    .expect("count versioned memory vectors");
+    let chunk_vector_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chunk_embeddings e
+         JOIN chunks c ON c.id=e.chunk_id
+         WHERE e.index_id=$1 AND c.document_id=$2",
+    )
+    .bind(&embedding_index.id)
+    .bind(&id)
+    .fetch_one(&db.pool)
+    .await
+    .expect("count versioned chunk vectors");
+    assert!(memory_vector_count > 0);
+    assert!(chunk_vector_count > 0);
+
+    // Removing one derived vector queues a durable repair from retained text;
+    // the background worker restores it without re-ingesting the document.
+    let memory_id: String =
+        sqlx::query_scalar("SELECT memory_id FROM memory_embeddings WHERE index_id=$1 LIMIT 1")
+            .bind(&embedding_index.id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("memory vector to backfill");
+    sqlx::query("DELETE FROM memory_embeddings WHERE index_id=$1 AND memory_id=$2")
+        .bind(&embedding_index.id)
+        .bind(&memory_id)
+        .execute(&db.pool)
+        .await
+        .expect("delete vector for backfill test");
+    db.queue_embedding_backfill(&org.id, &embedding_index.id)
+        .await
+        .expect("queue embedding repair");
+    let mut repaired = false;
+    for _ in 0..100 {
+        let present: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM memory_embeddings
+                           WHERE index_id=$1 AND memory_id=$2)",
+        )
+        .bind(&embedding_index.id)
+        .bind(&memory_id)
+        .fetch_one(&db.pool)
+        .await
+        .expect("check embedding repair");
+        if present {
+            repaired = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        repaired,
+        "background re-embedding did not restore the vector"
+    );
 
     // Memory search finds the fact.
     let sreq = MemorySearchRequest {
@@ -255,6 +326,7 @@ async fn ingest_search_profile_end_to_end() {
             &id,
             "wrong-token",
             &org.id,
+            &embedding_index.id,
             &[format!("mc_project_{}", &org.id[4..12])],
             &chunks,
             &[],
@@ -269,6 +341,7 @@ async fn ingest_search_profile_end_to_end() {
             &id,
             "atomic-test",
             &org.id,
+            &embedding_index.id,
             &[format!("mc_project_{}", &org.id[4..12])],
             &chunks,
             &memories,
@@ -311,6 +384,7 @@ async fn ingest_search_profile_end_to_end() {
             &id,
             "atomic-test",
             &org.id,
+            &embedding_index.id,
             &[format!("mc_project_{}", &org.id[4..12])],
             &chunks,
             &[],
@@ -322,4 +396,56 @@ async fn ingest_search_profile_end_to_end() {
         .is_err(),
         "an expired lease must not publish"
     );
+
+    // A model-version change creates a second isolated index and backfills all
+    // retained memory/chunk text without overwriting the first version.
+    let mut v2_models = ModelStack::for_tests(64);
+    v2_models.embedding_model.version = "test-v2".into();
+    let _v2_engine = Engine::new(
+        db.clone(),
+        Arc::new(v2_models),
+        EngineConfig {
+            ingest_concurrency: 1,
+            chunk_chars: 400,
+        },
+    );
+    let mut v2_index = None;
+    for _ in 0..200 {
+        v2_index = db
+            .embedding_indexes(&org.id)
+            .await
+            .expect("list embedding indexes")
+            .into_iter()
+            .find(|index| index.model_version == "test-v2");
+        if v2_index.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let v2_index = v2_index.expect("second embedding index");
+    assert_ne!(v2_index.id, embedding_index.id);
+    let mut v2_complete = false;
+    for _ in 0..200 {
+        v2_complete = sqlx::query_scalar(
+            "SELECT
+               NOT EXISTS (
+                 SELECT 1 FROM memories m WHERE m.org_id=$1 AND NOT EXISTS (
+                   SELECT 1 FROM memory_embeddings e
+                   WHERE e.index_id=$2 AND e.memory_id=m.id))
+               AND NOT EXISTS (
+                 SELECT 1 FROM chunks c WHERE c.org_id=$1 AND NOT EXISTS (
+                   SELECT 1 FROM chunk_embeddings e
+                   WHERE e.index_id=$2 AND e.chunk_id=c.id))",
+        )
+        .bind(&org.id)
+        .bind(&v2_index.id)
+        .fetch_one(&db.pool)
+        .await
+        .expect("check versioned embedding backfill");
+        if v2_complete {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(v2_complete, "second model version was not fully backfilled");
 }

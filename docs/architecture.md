@@ -62,9 +62,13 @@ The workspace has strictly downward dependencies (no cycles):
 ## Data model (Postgres)
 
 Every content table is tenant-scoped by `org_id` + `space_container_tag`. Embeddings are stored
-as dimensionless pgvector columns; metadata as `JSONB`; enums as text with fallbacks. Key
+in `memory_embeddings` and `chunk_embeddings`, keyed to an `embedding_indexes` registry row that
+records the organization, provider, model id, model version, and dimension. This keeps vector
+spaces isolated while retained memory/chunk text remains model-independent. Vectors use
+dimensionless pgvector columns; metadata uses `JSONB`; enums use text with fallbacks. Key
 structures: `documents`, `memories` (+ `memory_relations` edge table, version-chain columns),
-`chunks`, `spaces`, `profile_buckets`/`profile_summaries`, identity tables
+`chunks`, `embedding_indexes`/`embedding_backfill_jobs`, `spaces`,
+`profile_buckets`/`profile_summaries`, identity tables
 (`users`/`organizations`/`members`/`api_keys`), OAuth tables, `connections`/`sync_runs`, and an
 `api_requests` analytics log.
 
@@ -90,10 +94,14 @@ use OpenAI-compatible endpoints and are required at startup; reranking, transcri
 vision are optional and configured by env. Tests run against a deterministic in-process fake
 (`ModelStack::for_tests`). Embeddings are always L2-normalized before storage. Query embeddings
 are cached in-process (bounded, exact-match) so repeated searches skip the remote round-trip.
+Changing the configured provider/model/version/dimension selects a distinct index and queues a
+durable background re-embedding job from retained memory and chunk text.
 
 ## Background workers (binary)
 
 - **Ingest pool**, atomically claims durable queued/retryable/abandoned jobs with bounded concurrency.
+- **Embedding backfiller**, leases resumable batches for the configured model index and fills
+  missing memory/chunk vectors from retained text.
 - **Forgetting sweeper**, marks expired memories forgotten (every minute).
 - **Connector cron**, runs due connector syncs (every 4 hours).
 - **Profile-aggregation cron**, condenses old memories into `[Summary]` entries (every 6 hours).

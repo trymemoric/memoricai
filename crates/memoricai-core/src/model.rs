@@ -59,7 +59,7 @@ pub struct Memory {
     pub org_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
-    /// The fact text (legacy alias `content`).
+    /// The fact text.
     pub memory: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,

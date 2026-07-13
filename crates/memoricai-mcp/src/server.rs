@@ -41,7 +41,7 @@ async fn root() -> Json<Value> {
     Json(json!({ "name": "memoricai-mcp", "version": SERVER_VERSION }))
 }
 
-/// GET /mcp: no server-initiated SSE stream in Phase 1 (spec allows 405).
+/// GET /mcp: no server-initiated SSE stream (the spec allows 405).
 async fn get_mcp() -> Response {
     (
         StatusCode::METHOD_NOT_ALLOWED,

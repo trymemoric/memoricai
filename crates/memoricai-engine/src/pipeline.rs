@@ -11,6 +11,7 @@ impl Engine {
     pub async fn process_document(&self, doc_id: &str, lease_token: &str) -> Result<()> {
         let doc = self.db.get_document_by_id(doc_id).await?;
         let org_id = doc.org_id.clone();
+        let embedding_index = self.embedding_index(&org_id).await?;
         let settings = self.db.get_settings(&org_id).await?;
         let tags = if doc.container_tags.is_empty() {
             vec![memoricai_core::DEFAULT_CONTAINER_TAG.to_string()]
@@ -105,6 +106,7 @@ impl Engine {
                 doc_id,
                 lease_token,
                 &org_id,
+                &embedding_index.id,
                 &tags,
                 &drafts,
                 &prepared_memories,
@@ -117,7 +119,7 @@ impl Engine {
     }
 }
 
-/// Cheap extractive summary (Phase 1): the leading text, truncated on a word boundary.
+/// Cheap extractive summary: the leading text, truncated on a word boundary.
 fn make_summary(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
