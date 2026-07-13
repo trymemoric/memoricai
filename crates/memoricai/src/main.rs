@@ -106,6 +106,12 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     }
 
     let auth = Arc::new(AuthService::new(db.clone()));
+
+    let provision_key = config.provision_key.as_deref().map(Arc::from);
+    if provision_key.is_some() {
+        tracing::warn!("admin provisioning endpoint enabled");
+    }
+
     // Never mint and print an owner credential implicitly in production. Operators must
     // create the first key through the explicit, auditable `key create` command.
     if db.count_api_keys().await? == 0 {
@@ -222,6 +228,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         auth: auth.clone(),
         request_body_timeout: config.request_body_timeout,
         router_allowed_origins: Arc::new(config.router_allowed_origins),
+        provision_key,
     };
     let app = memoricai_api::build_router(state)
         .merge(memoricai_mcp::mcp_router(engine, auth))

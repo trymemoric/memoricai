@@ -182,6 +182,7 @@ All configuration is via environment variables.
 | `MEMORICAI_MAX_INFLIGHT_REQUESTS` | `256` | Global cap on concurrently executing HTTP requests (1-10000) |
 | `MEMORICAI_REQUEST_BODY_TIMEOUT_SECONDS` | `30` | Maximum time allowed while reading a request body (1-300 seconds) |
 | `MEMORICAI_ANALYTICS_RETENTION_DAYS` | `90` | Delete request analytics older than this many days (1-3650) |
+| `MEMORICAI_PROVISION_KEY` | n/a (endpoint disabled) | Master credential for `POST /v1/admin/provision`; unset returns 404 |
 | `RUST_LOG` | `info,memoricai=debug` | Log filter (tracing `EnvFilter` syntax) |
 
 ### Models

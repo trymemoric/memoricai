@@ -27,6 +27,8 @@ pub struct AppState {
     pub request_body_timeout: std::time::Duration,
     /// Exact upstream origins permitted for the Memory Router. Empty = public HTTPS only.
     pub router_allowed_origins: Arc<Vec<String>>,
+    /// Master credential for `POST /v1/admin/provision`. `None` = endpoint disabled (404).
+    pub provision_key: Option<Arc<str>>,
 }
 
 /// Error wrapper mapping [`memoricai_core::Error`] to an HTTP JSON error response.
@@ -215,8 +217,9 @@ pub fn build_router(state: AppState) -> Router {
     use routes::*;
 
     let request_body_timeout = state.request_body_timeout;
+    let provision_enabled = state.provision_key.is_some();
 
-    Router::new()
+    let mut router = Router::new()
         // documents / ingestion
         .route(
             "/v1/documents",
@@ -283,7 +286,17 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::inferred::routes())
         .merge(routes::oauth::routes())
         .merge(routes::connections::routes())
-        .merge(routes::router::routes())
+        .merge(routes::router::routes());
+
+    // Mount the admin provision route only when it's actually enabled, so a
+    // disabled endpoint is indistinguishable from a nonexistent path (no
+    // route registered => any method/body hits axum's plain 404 fallback,
+    // never the handler's in-band 405/400/404 JSON responses).
+    if provision_enabled {
+        router = router.merge(routes::admin::routes());
+    }
+
+    router
         .layer(DefaultBodyLimit::max(12 * 1024 * 1024))
         .layer(tower_http::timeout::RequestBodyTimeoutLayer::new(
             request_body_timeout,
