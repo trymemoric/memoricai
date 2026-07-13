@@ -66,14 +66,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Migrate => {
             let db = Db::connect(&config.database_url).await?;
             db.migrate().await?;
-            let migrated = db.migrate_connection_credentials().await?;
-            let oauth_migrated = db.migrate_oauth_credentials().await?;
-            if migrated > 0 {
-                tracing::info!(migrated, "encrypted legacy connector credentials");
-            }
-            if oauth_migrated > 0 {
-                tracing::info!(oauth_migrated, "hashed legacy OAuth credentials");
-            }
             tracing::info!("migrations applied");
         }
         Command::Key {
@@ -81,8 +73,6 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let db = Db::connect(&config.database_url).await?;
             db.migrate().await?;
-            db.migrate_connection_credentials().await?;
-            db.migrate_oauth_credentials().await?;
             let auth = AuthService::new(db);
             let (org, _user, key) = auth.bootstrap_org(&org_name, &email).await?;
             println!("organization: {} ({})", org.name, org.id);
@@ -96,14 +86,6 @@ async fn main() -> anyhow::Result<()> {
 async fn serve(config: Config) -> anyhow::Result<()> {
     let db = Db::connect(&config.database_url).await?;
     db.migrate().await?;
-    let migrated = db.migrate_connection_credentials().await?;
-    let oauth_migrated = db.migrate_oauth_credentials().await?;
-    if migrated > 0 {
-        tracing::info!(migrated, "encrypted legacy connector credentials");
-    }
-    if oauth_migrated > 0 {
-        tracing::info!(oauth_migrated, "hashed legacy OAuth credentials");
-    }
 
     let auth = Arc::new(AuthService::new(db.clone()));
 
@@ -135,6 +117,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         llm = %models.llm_label,
         embedder = %models.embedder_label,
         dim = models.dim(),
+        embedding_provider = %models.embedding_model.provider,
+        embedding_model = %models.embedding_model.model_id,
+        embedding_version = %models.embedding_model.version,
         "model stack"
     );
 

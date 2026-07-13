@@ -75,16 +75,12 @@ pub fn validate_configuration(production: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn encryption_configured() -> Result<bool> {
-    Ok(key_bytes()?.is_some())
-}
-
 pub fn is_encrypted(value: &str) -> bool {
     value.starts_with(PREFIX)
 }
 
-/// Encrypt a credential for storage. Local development without a configured key retains
-/// plaintext compatibility; callers must run [`validate_configuration`] at startup.
+/// Encrypt a credential for storage. Local development without a configured key stores
+/// plaintext; callers must run [`validate_configuration`] at startup.
 pub fn encrypt(plaintext: &str) -> Result<String> {
     if is_encrypted(plaintext) {
         return Ok(plaintext.to_string());
@@ -102,7 +98,7 @@ pub fn encrypt(plaintext: &str) -> Result<String> {
     Ok(format!("{PREFIX}{}", STANDARD.encode(blob)))
 }
 
-/// Decrypt a stored credential. Values without the `enc:v1:` prefix (legacy plaintext)
+/// Decrypt a stored credential. Development plaintext values without the `enc:v1:` prefix
 /// are returned unchanged.
 pub fn decrypt(stored: &str) -> Result<String> {
     let Some(rest) = stored.strip_prefix(PREFIX) else {
@@ -151,13 +147,6 @@ pub fn hash_token(token: &str) -> String {
         out.push_str(&format!("{b:02x}"));
     }
     out
-}
-
-pub fn is_token_hash(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 /// True if a metadata key names a sensitive value (mirrors the API redaction heuristic).
@@ -211,7 +200,10 @@ mod tests {
         // and decrypt never mangles a plaintext value.
         let encrypted = encrypt("ya29.secret-token").unwrap();
         assert_eq!(decrypt(&encrypted).unwrap(), "ya29.secret-token");
-        assert_eq!(decrypt("legacy-plaintext").unwrap(), "legacy-plaintext");
+        assert_eq!(
+            decrypt("development-plaintext").unwrap(),
+            "development-plaintext"
+        );
     }
 
     #[test]
@@ -221,8 +213,6 @@ mod tests {
         assert_ne!(h, hash_token("other"));
         assert_eq!(h.len(), 64);
         assert!(h.bytes().all(|b| b.is_ascii_hexdigit()));
-        assert!(is_token_hash(&h));
-        assert!(!is_token_hash("legacy-secret"));
     }
 
     #[test]

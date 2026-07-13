@@ -90,6 +90,7 @@ pub(crate) async fn insert_extracted_memories(
     tx: &mut Transaction<'_, Postgres>,
     document_id: &str,
     org_id: &str,
+    embedding_index_id: &str,
     drafts: &[ExtractedMemoryDraft],
 ) -> Result<()> {
     let mut tags: Vec<&str> = drafts
@@ -110,15 +111,15 @@ pub(crate) async fn insert_extracted_memories(
     for draft in drafts {
         let new_id = memoricai_core::ids::memory_id();
         let neighbor = sqlx::query(
-            r#"SELECT m.*, 1 - (m.embedding <=> $1::vector) AS similarity
+            r#"SELECT m.*, 1 - (me.embedding <=> $1::vector) AS similarity
                FROM memories m
+               JOIN memory_embeddings me ON me.memory_id=m.id AND me.index_id=$5
                WHERE m.org_id = $2 AND m.space_container_tag = $3
                  AND m.is_latest AND NOT m.is_forgotten
-                 AND m.embedding IS NOT NULL
                  AND (m.document_id IS NULL OR m.document_id = $4 OR EXISTS (
                        SELECT 1 FROM documents d
                        WHERE d.id = m.document_id AND d.status = 'done'))
-               ORDER BY m.embedding <=> $1::vector
+               ORDER BY me.embedding <=> $1::vector
                LIMIT 1
                FOR UPDATE OF m"#,
         )
@@ -126,6 +127,7 @@ pub(crate) async fn insert_extracted_memories(
         .bind(org_id)
         .bind(&draft.container_tag)
         .bind(document_id)
+        .bind(embedding_index_id)
         .fetch_optional(&mut **tx)
         .await
         .map_err(db_err)?;
@@ -176,12 +178,12 @@ pub(crate) async fn insert_extracted_memories(
         let now = chrono::Utc::now();
         sqlx::query(
             r#"INSERT INTO memories
-               (id, document_id, org_id, user_id, memory, space_container_tag, embedding,
+               (id, document_id, org_id, user_id, memory, space_container_tag,
                 version, is_latest, parent_memory_id, root_memory_id, relation, source_count,
                 is_static, is_inference, is_forgotten, forget_after, event_date, metadata,
                 bucket_key, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7::vector,$8,true,$9,$10,$11,1,$12,false,false,
-                       $13,$14,'{}'::jsonb,$15,$16,$16)"#,
+               VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8,$9,$10,1,$11,false,false,
+                       $12,$13,'{}'::jsonb,$14,$15,$15)"#,
         )
         .bind(&new_id)
         .bind(document_id)
@@ -189,7 +191,6 @@ pub(crate) async fn insert_extracted_memories(
         .bind(&draft.user_id)
         .bind(&draft.content)
         .bind(&draft.container_tag)
-        .bind(pgvec(&draft.embedding))
         .bind(version)
         .bind(&parent)
         .bind(&root)
@@ -199,6 +200,16 @@ pub(crate) async fn insert_extracted_memories(
         .bind(draft.event_date)
         .bind(&draft.bucket_key)
         .bind(now)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+        sqlx::query(
+            "INSERT INTO memory_embeddings (index_id, memory_id, embedding)
+             VALUES ($1,$2,$3::vector)",
+        )
+        .bind(embedding_index_id)
+        .bind(&new_id)
+        .bind(pgvec(&draft.embedding))
         .execute(&mut **tx)
         .await
         .map_err(db_err)?;
@@ -223,15 +234,28 @@ pub(crate) async fn insert_extracted_memories(
 }
 
 impl Db {
-    pub async fn insert_memory(&self, mem: &Memory, embedding: &[f32]) -> Result<()> {
+    pub async fn insert_memory(
+        &self,
+        mem: &Memory,
+        embedding_index_id: &str,
+        embedding: &[f32],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let dimension = crate::embeddings::embedding_index_dimension(
+            &mut tx,
+            embedding_index_id,
+            Some(&mem.org_id),
+        )
+        .await?;
+        crate::embeddings::validate_stored_embedding(embedding, dimension)?;
         sqlx::query(
             r#"INSERT INTO memories
                (id, custom_id, document_id, org_id, user_id, memory, summary, mem_type,
-                space_container_tag, embedding, version, is_latest, parent_memory_id, root_memory_id,
+                space_container_tag, version, is_latest, parent_memory_id, root_memory_id,
                 relation, source_count, is_static, is_inference, review_status, is_forgotten,
                 forget_reason, forget_after, forget_batch_id, event_date, metadata, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector,$11,$12,$13,$14,$15,$16,$17,$18,
-                       $19,$20,$21,$22,$23,$24,$25,$26,$27)"#,
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                       $18,$19,$20,$21,$22,$23,$24,$25,$26)"#,
         )
         .bind(&mem.id)
         .bind(&mem.custom_id)
@@ -242,7 +266,6 @@ impl Db {
         .bind(&mem.summary)
         .bind(&mem.mem_type)
         .bind(&mem.space_container_tag)
-        .bind(pgvec(embedding))
         .bind(mem.version)
         .bind(mem.is_latest)
         .bind(&mem.parent_memory_id)
@@ -260,9 +283,20 @@ impl Db {
         .bind(&mem.metadata)
         .bind(mem.created_at)
         .bind(mem.updated_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db_err)?;
+        sqlx::query(
+            "INSERT INTO memory_embeddings (index_id, memory_id, embedding)
+             VALUES ($1,$2,$3::vector)",
+        )
+        .bind(embedding_index_id)
+        .bind(&mem.id)
+        .bind(pgvec(embedding))
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
         Ok(())
     }
 
@@ -271,9 +305,17 @@ impl Db {
         &self,
         previous_id: &str,
         mem: &Memory,
+        embedding_index_id: &str,
         embedding: &[f32],
     ) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let dimension = crate::embeddings::embedding_index_dimension(
+            &mut tx,
+            embedding_index_id,
+            Some(&mem.org_id),
+        )
+        .await?;
+        crate::embeddings::validate_stored_embedding(embedding, dimension)?;
         let previous = sqlx::query(
             "SELECT org_id, space_container_tag, is_latest FROM memories WHERE id = $1 FOR UPDATE",
         )
@@ -298,11 +340,11 @@ impl Db {
         sqlx::query(
             r#"INSERT INTO memories
                (id, custom_id, document_id, org_id, user_id, memory, summary, mem_type,
-                space_container_tag, embedding, version, is_latest, parent_memory_id, root_memory_id,
+                space_container_tag, version, is_latest, parent_memory_id, root_memory_id,
                 relation, source_count, is_static, is_inference, review_status, is_forgotten,
                 forget_reason, forget_after, forget_batch_id, event_date, metadata, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector,$11,$12,$13,$14,$15,$16,$17,$18,
-                       $19,$20,$21,$22,$23,$24,$25,$26,$27)"#,
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                       $18,$19,$20,$21,$22,$23,$24,$25,$26)"#,
         )
         .bind(&mem.id)
         .bind(&mem.custom_id)
@@ -313,7 +355,6 @@ impl Db {
         .bind(&mem.summary)
         .bind(&mem.mem_type)
         .bind(&mem.space_container_tag)
-        .bind(pgvec(embedding))
         .bind(mem.version)
         .bind(mem.is_latest)
         .bind(&mem.parent_memory_id)
@@ -331,6 +372,16 @@ impl Db {
         .bind(&mem.metadata)
         .bind(mem.created_at)
         .bind(mem.updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        sqlx::query(
+            "INSERT INTO memory_embeddings (index_id, memory_id, embedding)
+             VALUES ($1,$2,$3::vector)",
+        )
+        .bind(embedding_index_id)
+        .bind(&mem.id)
+        .bind(pgvec(embedding))
         .execute(&mut *tx)
         .await
         .map_err(db_err)?;
@@ -359,9 +410,11 @@ impl Db {
             .ok_or_else(|| Error::NotFound(format!("memory {id}")))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn search_memories(
         &self,
         org_id: &str,
+        embedding_index_id: &str,
         tag: Option<&str>,
         qvec: &[f32],
         k: i64,
@@ -369,24 +422,25 @@ impl Db {
         include_forgotten: bool,
     ) -> Result<Vec<MemoryHit>> {
         let rows = sqlx::query(
-            r#"SELECT *, 1 - (embedding <=> $1::vector) AS similarity
-               FROM memories
-               WHERE org_id = $2
-                 AND ($3::text IS NULL OR space_container_tag = $3)
-                 AND is_latest
+            r#"SELECT m.*, 1 - (me.embedding <=> $1::vector) AS similarity
+               FROM memories m
+               JOIN memory_embeddings me ON me.memory_id=m.id AND me.index_id=$3
+               WHERE m.org_id = $2
+                 AND ($4::text IS NULL OR m.space_container_tag = $4)
+                 AND m.is_latest
                  -- Only surface memories whose source document is fully indexed, so a
                  -- partially-rebuilt (failed / in-progress) reindex is never searchable.
-                 AND (document_id IS NULL
+                 AND (m.document_id IS NULL
                       OR EXISTS (SELECT 1 FROM documents d
-                                 WHERE d.id = memories.document_id AND d.status = 'done'))
-                 AND ($6 OR NOT is_forgotten)
-                 AND embedding IS NOT NULL
-                 AND 1 - (embedding <=> $1::vector) >= $4
-               ORDER BY embedding <=> $1::vector
-               LIMIT $5"#,
+                                 WHERE d.id = m.document_id AND d.status = 'done'))
+                 AND ($7 OR NOT m.is_forgotten)
+                 AND 1 - (me.embedding <=> $1::vector) >= $5
+               ORDER BY me.embedding <=> $1::vector
+               LIMIT $6"#,
         )
         .bind(pgvec(qvec))
         .bind(org_id)
+        .bind(embedding_index_id)
         .bind(tag)
         .bind(threshold as f64)
         .bind(k)
@@ -407,24 +461,28 @@ impl Db {
     pub async fn neighbor_memories(
         &self,
         org_id: &str,
+        embedding_index_id: &str,
         tag: &str,
         qvec: &[f32],
         k: i64,
         exclude_id: &str,
     ) -> Result<Vec<MemoryHit>> {
         let rows = sqlx::query(
-            r#"SELECT *, 1 - (embedding <=> $1::vector) AS similarity
-             FROM memories
-             WHERE org_id = $2 AND space_container_tag = $3 AND is_latest AND NOT is_forgotten
-                 AND id <> $4 AND embedding IS NOT NULL
-                 AND (document_id IS NULL OR EXISTS (
+            r#"SELECT m.*, 1 - (me.embedding <=> $1::vector) AS similarity
+             FROM memories m
+             JOIN memory_embeddings me ON me.memory_id=m.id AND me.index_id=$3
+             WHERE m.org_id = $2 AND m.space_container_tag = $4
+                 AND m.is_latest AND NOT m.is_forgotten
+                 AND m.id <> $5
+                 AND (m.document_id IS NULL OR EXISTS (
                       SELECT 1 FROM documents d
-                      WHERE d.id = memories.document_id AND d.status = 'done'))
-               ORDER BY embedding <=> $1::vector
-               LIMIT $5"#,
+                      WHERE d.id = m.document_id AND d.status = 'done'))
+               ORDER BY me.embedding <=> $1::vector
+               LIMIT $6"#,
         )
         .bind(pgvec(qvec))
         .bind(org_id)
+        .bind(embedding_index_id)
         .bind(tag)
         .bind(exclude_id)
         .bind(k)

@@ -328,7 +328,7 @@ async fn memory_graph_tool(
         Ok(tag) => tag,
         Err(error) => return error_result(error),
     };
-    // Phase 1: summarize the profile as a stand-in for the full graph feed.
+    // Summarize the profile as a stand-in for the full graph feed.
     let preq = ProfileRequest {
         container_tag: tag.clone(),
         q: None,

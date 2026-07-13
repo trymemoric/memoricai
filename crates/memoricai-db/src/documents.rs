@@ -615,6 +615,7 @@ impl Db {
         document_id: &str,
         lease_token: &str,
         org_id: &str,
+        embedding_index_id: &str,
         container_tags: &[String],
         chunk_drafts: &[ChunkDraft],
         memory_drafts: &[crate::memories::ExtractedMemoryDraft],
@@ -639,6 +640,15 @@ impl Db {
             return Err(Error::Conflict(format!(
                 "lease for document {document_id} is no longer active"
             )));
+        }
+        let embedding_dimension =
+            crate::embeddings::embedding_index_dimension(&mut tx, embedding_index_id, Some(org_id))
+                .await?;
+        for (_, _, _, embedding, _) in chunk_drafts {
+            crate::embeddings::validate_stored_embedding(embedding, embedding_dimension)?;
+        }
+        for draft in memory_drafts {
+            crate::embeddings::validate_stored_embedding(&draft.embedding, embedding_dimension)?;
         }
 
         sqlx::query("DELETE FROM chunks WHERE document_id=$1")
@@ -669,12 +679,11 @@ impl Db {
             sqlx::query(
                 r#"INSERT INTO chunks
                    (id, document_id, org_id, space_container_tag, content, chunk_type,
-                    position, embedding, metadata)
-                   SELECT t.id, $2, $3, t.tag, t.content, t.chunk_type, t.position,
-                          t.embedding::vector, t.metadata
+                    position, metadata)
+                   SELECT t.id, $2, $3, t.tag, t.content, t.chunk_type, t.position, t.metadata
                    FROM unnest($1::text[], $4::text[], $5::text[], $6::text[],
-                               $7::int4[], $8::text[], $9::jsonb[])
-                        AS t(id, tag, content, chunk_type, position, embedding, metadata)"#,
+                               $7::int4[], $8::jsonb[])
+                        AS t(id, tag, content, chunk_type, position, metadata)"#,
             )
             .bind(&ids)
             .bind(document_id)
@@ -683,8 +692,18 @@ impl Db {
             .bind(&contents)
             .bind(&chunk_types)
             .bind(&positions)
-            .bind(&embeddings)
             .bind(&metadatas)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+            sqlx::query(
+                "INSERT INTO chunk_embeddings (index_id, chunk_id, embedding)
+                 SELECT $1, input.id, input.embedding::vector
+                 FROM unnest($2::text[], $3::text[]) AS input(id, embedding)",
+            )
+            .bind(embedding_index_id)
+            .bind(&ids)
+            .bind(&embeddings)
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
@@ -695,8 +714,14 @@ impl Db {
             &[document_id.to_string()],
         )
         .await?;
-        crate::memories::insert_extracted_memories(&mut tx, document_id, org_id, memory_drafts)
-            .await?;
+        crate::memories::insert_extracted_memories(
+            &mut tx,
+            document_id,
+            org_id,
+            embedding_index_id,
+            memory_drafts,
+        )
+        .await?;
 
         let finished = sqlx::query(
             "UPDATE documents SET status='done', summary=COALESCE($2,summary),
@@ -721,9 +746,11 @@ impl Db {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn search_chunks(
         &self,
         org_id: &str,
+        embedding_index_id: &str,
         tags: Option<&[String]>,
         qvec: &[f32],
         k: i64,
@@ -732,22 +759,23 @@ impl Db {
     ) -> Result<Vec<ChunkScore>> {
         let rows = sqlx::query(
             r#"SELECT c.document_id, c.content, d.metadata AS doc_metadata,
-                      1 - (c.embedding <=> $1::vector) AS similarity
+                      1 - (ce.embedding <=> $1::vector) AS similarity
                FROM chunks c
+               JOIN chunk_embeddings ce ON ce.chunk_id=c.id AND ce.index_id=$3
                JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id
                WHERE c.org_id = $2
                  -- Only surface chunks of fully-indexed documents (a failed / in-progress
                  -- reindex must not appear in results).
                  AND d.status = 'done'
-                 AND ($3::text[] IS NULL OR c.space_container_tag = ANY($3))
-                 AND ($4::text IS NULL OR c.document_id = $4)
-                 AND c.embedding IS NOT NULL
-                 AND 1 - (c.embedding <=> $1::vector) >= $5
-               ORDER BY c.embedding <=> $1::vector
-               LIMIT $6"#,
+                 AND ($4::text[] IS NULL OR c.space_container_tag = ANY($4))
+                 AND ($5::text IS NULL OR c.document_id = $5)
+                 AND 1 - (ce.embedding <=> $1::vector) >= $6
+               ORDER BY ce.embedding <=> $1::vector
+               LIMIT $7"#,
         )
         .bind(pgvec(qvec))
         .bind(org_id)
+        .bind(embedding_index_id)
         .bind(tags)
         .bind(doc_id)
         .bind(threshold as f64)

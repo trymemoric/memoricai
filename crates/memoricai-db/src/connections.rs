@@ -218,57 +218,6 @@ impl Db {
         Ok(())
     }
 
-    /// Encrypt legacy plaintext connector credentials and sensitive metadata in place.
-    /// Safe to run on every startup: the `enc:v1:` envelope is idempotently preserved.
-    pub async fn migrate_connection_credentials(&self) -> Result<u64> {
-        if !crate::crypto::encryption_configured()? {
-            return Ok(0);
-        }
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let rows = sqlx::query(
-            "SELECT id, access_token, refresh_token, sync_cursor, metadata
-             FROM connections FOR UPDATE",
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(db_err)?;
-        let mut migrated = 0u64;
-        for row in rows {
-            let access: Option<String> = row.get("access_token");
-            let refresh: Option<String> = row.get("refresh_token");
-            let cursor: Option<String> = row.get("sync_cursor");
-            let mut metadata: Value = row.get("metadata");
-            let needs_migration = access
-                .as_deref()
-                .is_some_and(|v| !crate::crypto::is_encrypted(v))
-                || refresh
-                    .as_deref()
-                    .is_some_and(|v| !crate::crypto::is_encrypted(v))
-                || cursor
-                    .as_deref()
-                    .is_some_and(|v| !crate::crypto::is_encrypted(v));
-            let before_metadata = metadata.clone();
-            crate::crypto::encrypt_metadata(&mut metadata)?;
-            if needs_migration || metadata != before_metadata {
-                sqlx::query(
-                    "UPDATE connections SET access_token=$2, refresh_token=$3,
-                            sync_cursor=$4, metadata=$5 WHERE id=$1",
-                )
-                .bind(row.get::<String, _>("id"))
-                .bind(crate::crypto::encrypt_opt(access.as_deref())?)
-                .bind(crate::crypto::encrypt_opt(refresh.as_deref())?)
-                .bind(crate::crypto::encrypt_opt(cursor.as_deref())?)
-                .bind(metadata)
-                .execute(&mut *tx)
-                .await
-                .map_err(db_err)?;
-                migrated += 1;
-            }
-        }
-        tx.commit().await.map_err(db_err)?;
-        Ok(migrated)
-    }
-
     /// Connections whose last sync is older than `hours` (for the cron sweep).
     pub async fn connections_due(&self, hours: i64) -> Result<Vec<Connection>> {
         let rows = sqlx::query(

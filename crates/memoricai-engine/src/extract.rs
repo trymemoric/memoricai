@@ -1,4 +1,4 @@
-//! Content-type detection and text extraction. Phase 1 handles text, markdown,
+//! Content-type detection and text extraction for text, markdown,
 //! code, JSON/CSV (passthrough), URLs (fetch + readability-lite), and PDF bytes.
 
 use futures::StreamExt;

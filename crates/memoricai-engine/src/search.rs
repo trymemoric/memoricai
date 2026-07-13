@@ -1,6 +1,5 @@
 //! Retrieval: `/v1` chunk RAG, `/v1` memory/hybrid search, profile fast path,
-//! and bulk semantic forget. Supports query rewriting (Phase 2) and cross-encoder
-//! reranking (Phase 2).
+//! and bulk semantic forget. Supports query rewriting and cross-encoder reranking.
 
 use crate::Engine;
 use futures::StreamExt;
@@ -161,6 +160,7 @@ impl Engine {
             return Err(Error::BadRequest("invalid metadata filter".into()));
         }
         let start = Instant::now();
+        let embedding_index = self.embedding_index(org_id).await?;
         let qvecs = self.query_embeddings(&req.q, req.rewrite_query).await?;
         let tags = req.container_tags.as_deref();
 
@@ -169,6 +169,7 @@ impl Engine {
         let hit_batches = futures::future::try_join_all(qvecs.iter().map(|qvec| {
             self.db.search_chunks(
                 org_id,
+                &embedding_index.id,
                 tags,
                 qvec,
                 (req.limit as i64) * 4,
@@ -284,6 +285,7 @@ impl Engine {
             return Err(Error::BadRequest("invalid metadata filter".into()));
         }
         let start = Instant::now();
+        let embedding_index = self.embedding_index(org_id).await?;
         let qvecs = self.query_embeddings(&req.q, req.rewrite_query).await?;
         let tag = req.container_tag.as_deref().or(default_tag);
         let filter = req.filters.as_ref().and_then(MetadataFilter::from_value);
@@ -306,6 +308,7 @@ impl Engine {
             let hit_batches = futures::future::try_join_all(qvecs.iter().map(|qvec| {
                 self.db.search_memories(
                     org_id,
+                    &embedding_index.id,
                     tag,
                     qvec,
                     fetch,
@@ -379,6 +382,7 @@ impl Engine {
             let chunk_batches = futures::future::try_join_all(qvecs.iter().map(|qvec| {
                 self.db.search_chunks(
                     org_id,
+                    &embedding_index.id,
                     tags.as_deref(),
                     qvec,
                     req.limit as i64,
@@ -678,10 +682,12 @@ impl Engine {
             .pop()
             .ok_or_else(|| Error::Model("empty embedding response".into()))?;
         crate::validate_embedding(&qvec, self.models.dim())?;
+        let embedding_index = self.embedding_index(org_id).await?;
         let hits = self
             .db
             .search_memories(
                 org_id,
+                &embedding_index.id,
                 Some(&req.container_tag),
                 &qvec,
                 req.max_forget as i64,

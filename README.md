@@ -146,6 +146,7 @@ export MEMORICAI_LLM_BASE_URL=https://api.openai.com/v1
 export MEMORICAI_LLM_MODEL=gpt-4o-mini
 export MEMORICAI_EMBEDDING_BASE_URL=https://api.openai.com/v1
 export MEMORICAI_EMBEDDING_MODEL=text-embedding-3-small
+export MEMORICAI_EMBEDDING_MODEL_VERSION=provider-default
 export MEMORICAI_EMBEDDING_DIM=1536
 export OPENAI_API_KEY=sk-...
 
@@ -195,14 +196,24 @@ All configuration is via environment variables.
 | `MEMORICAI_LLM_API_KEY` | n/a | Chat auth; fallback `OPENAI_API_KEY` |
 | `MEMORICAI_EMBEDDING_BASE_URL` |, **(required)** | Embeddings endpoint; fallback `OPENAI_BASE_URL` |
 | `MEMORICAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+| `MEMORICAI_EMBEDDING_MODEL_VERSION` | `provider-default` | Explicit model revision/weight version; changing it creates a new versioned vector index and queues re-embedding |
+| `MEMORICAI_EMBEDDING_PROVIDER_NAME` | endpoint hostname | Stable provider identity recorded with remote vector indexes |
 | `MEMORICAI_EMBEDDING_API_KEY` | n/a | Embeddings auth; fallback `OPENAI_API_KEY` |
-| `MEMORICAI_EMBEDDING_DIM` | `1536` | Vector dimension (columns are dimensionless, changing it needs no migration, but re-ingest) |
+| `MEMORICAI_EMBEDDING_DIM` | `1536` | Vector dimension; changing it creates a new index and queues background re-embedding |
 | `MEMORICAI_RERANK_URL` |, (LLM-based rerank) | Dedicated rerank endpoint (TEI/Jina/Cohere-style) |
 | `MEMORICAI_RERANK_MODEL` / `_API_KEY` | `rerank` /, | Rerank model and auth |
 | `MEMORICAI_TRANSCRIBE_BASE_URL` |, (disabled) | Audio/video transcription; fallback `OPENAI_BASE_URL` |
 | `MEMORICAI_TRANSCRIBE_MODEL` / `_API_KEY` | `whisper-1` /, | Transcription model and auth |
 | `MEMORICAI_VISION_BASE_URL` |, (disabled) | Image captioning/OCR (no `OPENAI_BASE_URL` fallback) |
 | `MEMORICAI_VISION_MODEL` / `_API_KEY` | `gpt-4o-mini` /, | Vision model and auth |
+
+Embedding vectors are stored in versioned per-organization indexes identified by provider,
+model id, model version, and dimension. Memory and chunk rows retain their source text, so
+when any identity field changes Memoric creates a distinct index and durably re-embeds missing
+vectors in background batches. Old index versions remain isolated and are never compared with
+queries produced by the newly configured model. Set `MEMORICAI_EMBEDDING_MODEL_VERSION` to a
+real pinned provider/model revision when one is available; `provider-default` cannot detect a
+provider silently replacing weights behind an unchanged model id.
 
 ### Connectors
 

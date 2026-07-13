@@ -9,6 +9,7 @@ pub mod buckets;
 pub mod connections;
 pub mod crypto;
 pub mod documents;
+pub mod embeddings;
 pub mod memories;
 pub mod oauth;
 pub mod settings;
@@ -24,29 +25,7 @@ use sqlx::{Executor, PgPool, Row};
 /// stays self-contained without depending on sqlx's `macros` feature, which
 /// pulls in unused MySQL support and the vulnerable `rsa` crate
 /// (RUSTSEC-2023-0071).
-const MIGRATIONS: &[(&str, &str)] = &[
-    ("0001_init", include_str!("../migrations/0001_init.sql")),
-    (
-        "0002_phase2_3",
-        include_str!("../migrations/0002_phase2_3.sql"),
-    ),
-    (
-        "0003_hardening",
-        include_str!("../migrations/0003_hardening.sql"),
-    ),
-    (
-        "0004_event_dates",
-        include_str!("../migrations/0004_event_dates.sql"),
-    ),
-    (
-        "0005_lease_fence_and_aggregation",
-        include_str!("../migrations/0005_lease_fence_and_aggregation.sql"),
-    ),
-    (
-        "0006_production_hardening",
-        include_str!("../migrations/0006_production_hardening.sql"),
-    ),
-];
+const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/0001_init.sql"))];
 
 #[derive(Clone)]
 pub struct Db {

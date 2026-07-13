@@ -1,6 +1,6 @@
 {
   "name": "@memoricai/sdk",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "TypeScript SDK for the memoricai /v1 HTTP API",
   "license": "MIT",
   "type": "module",
