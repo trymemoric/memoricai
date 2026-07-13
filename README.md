@@ -94,7 +94,7 @@ docker run -d --name memoricai-pg -e POSTGRES_PASSWORD=postgres \
 # 2. Build (or: docker pull ghcr.io/trymemoric/memoricai:latest)
 cargo build --release
 
-# 3. Point it at your models (any OpenAI-compatible endpoint; see Model configuration)
+# 3. Point it at your models (see docs/configuration.md)
 export MEMORICAI_LLM_BASE_URL=https://api.openai.com/v1
 export MEMORICAI_EMBEDDING_BASE_URL=https://api.openai.com/v1
 export OPENAI_API_KEY=sk-...
@@ -136,92 +136,9 @@ curl -s localhost:7373/v1/profile \
   -d '{"containerTag":"mc_project_default"}'
 ```
 
-## Model configuration
-
-memoricai requires a chat endpoint and an embeddings endpoint (the server refuses to start without them) and works with any OpenAI-compatible provider, hosted or fully local:
-
-```bash
-# OpenAI (OPENAI_BASE_URL also enables audio transcription)
-export MEMORICAI_LLM_BASE_URL=https://api.openai.com/v1
-export MEMORICAI_LLM_MODEL=gpt-4o-mini
-export MEMORICAI_EMBEDDING_BASE_URL=https://api.openai.com/v1
-export MEMORICAI_EMBEDDING_MODEL=text-embedding-3-small
-export MEMORICAI_EMBEDDING_MODEL_VERSION=provider-default
-export MEMORICAI_EMBEDDING_DIM=1536
-export OPENAI_API_KEY=sk-...
-
-# In-process embeddings, no API needed (build with --features local-embeddings)
-export MEMORICAI_EMBEDDING_PROVIDER=local
-export MEMORICAI_EMBEDDING_MODEL=nomic-embed-text-v1.5-q   # or nomic-embed-text-v1.5, bge-small-en-v1.5, all-minilm-l6-v2
-
-# Ollama (fully local)
-export MEMORICAI_LLM_BASE_URL=http://localhost:11434/v1
-export MEMORICAI_LLM_MODEL=llama3.1
-export MEMORICAI_EMBEDDING_BASE_URL=http://localhost:11434/v1
-export MEMORICAI_EMBEDDING_MODEL=nomic-embed-text
-export MEMORICAI_EMBEDDING_DIM=768
-```
-
-`OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL` are accepted as fallbacks for the LLM, embedding, and transcription settings, so a plain OpenAI setup needs only `OPENAI_BASE_URL` + `OPENAI_API_KEY`.
-
 ## Configuration
 
-All configuration is via environment variables.
-
-### Core
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `MEMORICAI_DATABASE_URL` |, **(required)** | Postgres connection string (`DATABASE_URL` also accepted) |
-| `MEMORICAI_BIND` | `0.0.0.0:7373` | HTTP listen address |
-| `MEMORICAI_INGEST_CONCURRENCY` | CPU count, clamped 2-8 | Ingest worker pool size (the pipeline is I/O-bound; raise it for bulk imports) |
-| `MEMORICAI_BASE_URL` | loopback request origin only | Canonical HTTPS public origin for OAuth discovery, connector callbacks, and webhooks; required for non-loopback deployments |
-| `MEMORICAI_ROUTER_ALLOWED_ORIGINS` | public HTTPS origins | Optional comma-separated exact upstream origins for the Memory Router; required for HTTP/private-network model servers |
-| `MEMORICAI_CONNECTOR_ALLOWED_ORIGINS` | n/a | Optional comma-separated exact origins allowed to reach private-network S3-compatible endpoints |
-| `MEMORICAI_ENV` | release: `production`; debug: `development` | Runtime security mode. Release binaries fail closed unless explicitly set to `development`/`dev`/`local`/`test` |
-| `MEMORICAI_ENCRYPTION_KEY` | n/a | 32-byte base64 or hex AES-256-GCM key for connector tokens, provider cursors, and sensitive metadata; required in production (generate with `openssl rand -base64 32`) |
-| `MEMORICAI_REQUIRE_ENCRYPTION` | `false` | Set to `true` to require an encryption key without changing the environment name |
-| `MEMORICAI_MAX_INFLIGHT_REQUESTS` | `256` | Global cap on concurrently executing HTTP requests (1-10000) |
-| `MEMORICAI_REQUEST_BODY_TIMEOUT_SECONDS` | `30` | Maximum time allowed while reading a request body (1-300 seconds) |
-| `MEMORICAI_ANALYTICS_RETENTION_DAYS` | `90` | Delete request analytics older than this many days (1-3650) |
-| `MEMORICAI_PROVISION_KEY` | n/a (endpoint disabled) | Master credential for `POST /v1/admin/provision`; unset returns 404 |
-| `RUST_LOG` | `info,memoricai=debug` | Log filter (tracing `EnvFilter` syntax) |
-
-### Models
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `MEMORICAI_LLM_BASE_URL` |, **(required)** | OpenAI-compatible chat endpoint; fallback `OPENAI_BASE_URL` |
-| `MEMORICAI_LLM_MODEL` | `gpt-4o-mini` | Chat model; fallbacks `OPENAI_MODEL`, `MEMORICAI_MODEL` |
-| `MEMORICAI_LLM_API_KEY` | n/a | Chat auth; fallback `OPENAI_API_KEY` |
-| `MEMORICAI_EMBEDDING_BASE_URL` |, **(required)** | Embeddings endpoint; fallback `OPENAI_BASE_URL` |
-| `MEMORICAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
-| `MEMORICAI_EMBEDDING_MODEL_VERSION` | `provider-default` | Explicit model revision/weight version; changing it creates a new versioned vector index and queues re-embedding |
-| `MEMORICAI_EMBEDDING_PROVIDER_NAME` | endpoint hostname | Stable provider identity recorded with remote vector indexes |
-| `MEMORICAI_EMBEDDING_API_KEY` | n/a | Embeddings auth; fallback `OPENAI_API_KEY` |
-| `MEMORICAI_EMBEDDING_DIM` | `1536` | Vector dimension; changing it creates a new index and queues background re-embedding |
-| `MEMORICAI_RERANK_URL` |, (LLM-based rerank) | Dedicated rerank endpoint (TEI/Jina/Cohere-style) |
-| `MEMORICAI_RERANK_MODEL` / `_API_KEY` | `rerank` /, | Rerank model and auth |
-| `MEMORICAI_TRANSCRIBE_BASE_URL` |, (disabled) | Audio/video transcription; fallback `OPENAI_BASE_URL` |
-| `MEMORICAI_TRANSCRIBE_MODEL` / `_API_KEY` | `whisper-1` /, | Transcription model and auth |
-| `MEMORICAI_VISION_BASE_URL` |, (disabled) | Image captioning/OCR (no `OPENAI_BASE_URL` fallback) |
-| `MEMORICAI_VISION_MODEL` / `_API_KEY` | `gpt-4o-mini` /, | Vision model and auth |
-
-Embedding vectors are stored in versioned per-organization indexes identified by provider,
-model id, model version, and dimension. Memory and chunk rows retain their source text, so
-when any identity field changes Memoric creates a distinct index and durably re-embeds missing
-vectors in background batches. Old index versions remain isolated and are never compared with
-queries produced by the newly configured model. Set `MEMORICAI_EMBEDDING_MODEL_VERSION` to a
-real pinned provider/model revision when one is available; `provider-default` cannot detect a
-provider silently replacing weights behind an unchanged model id.
-
-### Connectors
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `MEMORICAI_<PROVIDER>_CLIENT_ID` / `_CLIENT_SECRET` | n/a | OAuth app credentials per provider, e.g. `MEMORICAI_GOOGLE_DRIVE_CLIENT_ID` |
-| `MEMORICAI_GITHUB_WEBHOOK_SECRET` | n/a | Enables GitHub push/delete webhooks (HMAC-SHA256 verified); unset → GitHub falls back to cron polling |
-| `MEMORICAI_GRANOLA_BASE_URL` | `https://api.granola.ai` | Granola API base |
+See [Configuration](docs/configuration.md) for model setup examples and the complete environment-variable reference.
 
 ## HTTP API
 
@@ -363,22 +280,6 @@ python3 scripts/smoke_phase23.py <keyfile>    # OAuth, buckets, analytics, conne
 ```
 
 Quality gates enforced by the workspace and CI: formatting, unit tests, the Postgres/pgvector integration test, clippy with warnings denied, and `cargo audit`. The audit configuration narrowly ignores the `rsa` advisory reachable only through sqlx's disabled MySQL feature; `cargo tree -i rsa` confirms it is not compiled in this Postgres-only build. Builds never require a database (no sqlx compile-time macros).
-
-## Security notes
-
-- API keys are Argon2-hashed at rest. OAuth authorization codes are single-use, public clients require PKCE S256, refresh tokens rotate atomically, and token scopes are intersected with current membership restrictions on every request.
-- Restricted credentials default to their allowed projects. Reads may see a shared document through an authorized project, while mutations require access to every project attached to that document.
-- The Memory Router permits public HTTPS targets by default. Configure exact origins for local providers; an allowlisted origin intentionally permits access to that origin's private address.
-- Model embeddings and reranker outputs are checked for count, dimension, ordering, and finite numeric values before they can reach pgvector or alter ranking.
-
-CLI: `memoricai serve` (run the server; migrations auto-apply), `memoricai migrate` (apply migrations and exit), `memoricai key create [--org-name <name>] [--email <email>]` (mint an org + API key).
-
-## Limitations & roadmap
-
-- Vector search is exact-scan; ANN (HNSW) index management is left to deployments.
-- Poll-based sync for all connectors except GitHub (no Drive/Gmail/Notion/Graph push subscriptions yet).
-- Transcription, vision, and reranking call configurable remote endpoints; no ML is bundled.
-- The MCP transport is POST-only (no SSE streaming); the OpenAPI document is a discovery stub, not a full schema.
 
 ## Contributing
 
