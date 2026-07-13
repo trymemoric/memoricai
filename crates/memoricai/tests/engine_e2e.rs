@@ -401,6 +401,25 @@ async fn ingest_search_profile_end_to_end() {
     // retained memory/chunk text without overwriting the first version.
     let mut v2_models = ModelStack::for_tests(64);
     v2_models.embedding_model.version = "test-v2".into();
+    let v2_index = db
+        .ensure_embedding_index(
+            &org.id,
+            &v2_models.embedding_model.model_id,
+            &v2_models.embedding_model.version,
+            &v2_models.embedding_model.provider,
+            v2_models.embedding_model.dimension,
+        )
+        .await
+        .expect("second embedding index");
+    let first_v2_batch = db
+        .embedding_backfill_batch(&v2_index, 64)
+        .await
+        .expect("first second-version backfill batch");
+    assert!(!first_v2_batch.memories.is_empty());
+    assert!(
+        first_v2_batch.chunks.is_empty(),
+        "a backfill transaction must lock only one source table"
+    );
     let _v2_engine = Engine::new(
         db.clone(),
         Arc::new(v2_models),
@@ -409,20 +428,6 @@ async fn ingest_search_profile_end_to_end() {
             chunk_chars: 400,
         },
     );
-    let mut v2_index = None;
-    for _ in 0..200 {
-        v2_index = db
-            .embedding_indexes(&org.id)
-            .await
-            .expect("list embedding indexes")
-            .into_iter()
-            .find(|index| index.model_version == "test-v2");
-        if v2_index.is_some() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    let v2_index = v2_index.expect("second embedding index");
     assert_ne!(v2_index.id, embedding_index.id);
     let mut v2_complete = false;
     for _ in 0..200 {

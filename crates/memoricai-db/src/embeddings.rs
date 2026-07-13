@@ -274,12 +274,15 @@ impl Db {
         }))
     }
 
+    /// Read one bounded batch from a single source table. Keeping memory and chunk
+    /// writes in separate transactions avoids lock-order cycles with document
+    /// replacement and deletion transactions.
     pub async fn embedding_backfill_batch(
         &self,
         index: &EmbeddingIndex,
         limit: i64,
     ) -> Result<EmbeddingBackfillBatch> {
-        let memories = sqlx::query(
+        let memories: Vec<(String, String)> = sqlx::query(
             "SELECT m.id, m.memory AS content FROM memories m
              WHERE m.org_id=$1 AND NOT EXISTS (
                SELECT 1 FROM memory_embeddings e
@@ -295,6 +298,12 @@ impl Db {
         .into_iter()
         .map(|row| (row.get("id"), row.get("content")))
         .collect();
+        if !memories.is_empty() {
+            return Ok(EmbeddingBackfillBatch {
+                memories,
+                chunks: Vec::new(),
+            });
+        }
         let chunks = sqlx::query(
             "SELECT c.id, c.content FROM chunks c
              WHERE c.org_id=$1 AND NOT EXISTS (
@@ -314,8 +323,8 @@ impl Db {
         Ok(EmbeddingBackfillBatch { memories, chunks })
     }
 
-    /// Persist one backfill batch and release its lease atomically. Empty input
-    /// marks the job complete; otherwise it is requeued for the next batch.
+    /// Persist one single-source backfill batch and release its lease atomically.
+    /// Empty input marks the job complete; otherwise it is requeued for the next batch.
     pub async fn finish_embedding_backfill_batch(
         &self,
         index_id: &str,
@@ -329,6 +338,11 @@ impl Db {
         {
             return Err(Error::Internal(
                 "embedding backfill ids and vectors are misaligned".into(),
+            ));
+        }
+        if !memory_ids.is_empty() && !chunk_ids.is_empty() {
+            return Err(Error::Internal(
+                "embedding backfill batch cannot mix memory and chunk vectors".into(),
             ));
         }
         let mut tx = self.pool.begin().await.map_err(db_err)?;
