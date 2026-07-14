@@ -4,7 +4,7 @@
 
 # memoricai
 
-**A memory & context engine for AI agents, one self-hostable Rust binary.**
+**The second brain for AI agents, a self-hostable memory & context engine in a single Rust binary.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](rust-toolchain.toml)
@@ -22,9 +22,11 @@
 
 ---
 
-memoricai ingests raw content (text, Markdown, code, URLs, PDFs, images, audio/video), distills it into a **temporal graph of atomic memories**, with version chains, relations, and automatic forgetting, and serves it back through hybrid semantic search and auto-maintained user profiles. Everything ships in a single binary: HTTP API (`/v1`), an [MCP](https://modelcontextprotocol.io) server, an OAuth2/OIDC provider, eight data connectors, and a memory-injecting LLM proxy.
+A context window is not a memory. Agents need more than a bigger prompt, they need durable facts, recall that tracks what changed, and a compact context packet assembled for the task at hand.
 
-The only hard dependency is **Postgres with pgvector**. The model layer speaks to any OpenAI-compatible provider, OpenAI, Ollama, LM Studio, vLLM, configured with two environment variables.
+memoricai is that memory layer, the second brain for your agents. It turns raw content, documents, conversations, tool results, and decisions (text, Markdown, code, URLs, PDFs, images, audio/video), into a **temporal graph of atomic memories linked to their sources**, with version chains, relations, and automatic forgetting, then serves it back through hybrid semantic search, auto-maintained profiles, and ready-to-inject context digests, so every agent can pick up where the last run left off.
+
+Everything ships in a single binary: HTTP API (`/v1`), an [MCP](https://modelcontextprotocol.io) server, an OAuth2/OIDC provider, eight data connectors, and a memory-injecting LLM proxy. One memory layer, any agent, run it fully managed at [memoric.xyz](https://memoric.xyz) or self-host it. The only hard dependency is **Postgres with pgvector**; the model layer speaks to any OpenAI-compatible provider (OpenAI, Ollama, LM Studio, vLLM) configured with two environment variables.
 
 > **Status:** pre-1.0. APIs may change between minor versions.
 
@@ -278,31 +280,6 @@ MEMORICAI_TEST_DATABASE_URL=postgres://$USER@localhost/memoricai_test \
 python3 scripts/smoke.py <keyfile>            # engine, API, MCP
 python3 scripts/smoke_phase23.py <keyfile>    # OAuth, buckets, analytics, connectors, router
 ```
-
-Quality gates enforced by the workspace and CI: formatting, unit tests, the Postgres/pgvector integration test, clippy with warnings denied, and `cargo audit`. The audit configuration narrowly ignores the `rsa` advisory reachable only through sqlx's disabled MySQL feature; `cargo tree -i rsa` confirms it is not compiled in this Postgres-only build. Builds never require a database (no sqlx compile-time macros).
-
-## Releasing & publishing
-
-Pushing a `v*` tag (e.g. `v0.1.5`) runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which publishes every artifact from CI in parallel:
-
-| Job | Publishes | Registry |
-| --- | --- | --- |
-| `ghcr-image` | Docker image | GHCR (`ghcr.io/trymemoric/memoricai`) — uses the built-in `GITHUB_TOKEN` |
-| `publish-npm` | `@memoricai/sdk` | npm |
-| `publish-pypi` | `memoricai` | PyPI |
-| `publish-crates` | `memoricai-core` then `memoricai-client` (dependency order) | crates.io |
-
-Each package job first checks that the tag matches the declared package version and fails fast on a mismatch, so every registry release stays in lockstep with the tag. Package publishing runs on tag pushes only — the `workflow_dispatch` path just rebuilds an already-released Docker image.
-
-**Required repository secrets** (GitHub → *Settings* → *Secrets and variables* → *Actions* → *New repository secret*):
-
-| Secret | How to create it |
-| --- | --- |
-| `NPM_TOKEN` | npmjs.com → *Access Tokens* → *Generate New Token* → **Automation** (bypasses 2FA in CI). The `@memoricai` org/scope must exist and the token owner must be able to publish to it. |
-| `PYPI_API_TOKEN` | pypi.org → *Account settings* → *API tokens* → *Add API token*. Scope it to the `memoricai` project (create a broader token for the first publish, then rotate to a project-scoped one). Paste the full `pypi-…` value. |
-| `CARGO_REGISTRY_TOKEN` | crates.io → *Account Settings* → *API Tokens* → *New Token* with the `publish-new` and `publish-update` scopes. |
-
-The Docker image needs no extra secret. To cut a release: bump the version in `Cargo.toml` (`[workspace.package]`), `sdks/typescript/package.json`, and `sdks/python/pyproject.toml` to the same value, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 ## Contributing
 
