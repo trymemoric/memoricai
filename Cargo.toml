@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2021"
-version = "0.3.0"
+version = "0.3.1"
 license = "MIT"
 rust-version = "1.88"
 repository = "https://github.com/trymemoric/memoricai"
@@ -21,7 +21,7 @@ todo = "warn"
 
 [workspace.dependencies]
 # internal crates (version required so published crates resolve on crates.io)
-memoricai-core = { path = "crates/memoricai-core", version = "0.3.0" }
+memoricai-core = { path = "crates/memoricai-core", version = "0.3.1" }
 memoricai-db = { path = "crates/memoricai-db" }
 memoricai-models = { path = "crates/memoricai-models" }
 memoricai-engine = { path = "crates/memoricai-engine" }

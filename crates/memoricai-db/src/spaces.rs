@@ -211,6 +211,12 @@ impl Db {
             .ok_or_else(|| Error::NotFound(format!("project {id}")))?;
         let tag = &space.container_tag;
 
+        if action == "move" && target_container_tag == Some(tag.as_str()) {
+            return Err(Error::BadRequest(
+                "target project must differ from source project".into(),
+            ));
+        }
+
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         let (docs, mems) = if action == "move" {
             let target = target_container_tag
@@ -255,13 +261,14 @@ impl Db {
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
-            // Same de-duplication for chunks shared across both projects.
+            // Move shared chunk membership without copying or deleting the chunk/vector.
             sqlx::query(
-                "DELETE FROM chunks c
-                 WHERE c.org_id = $1 AND c.space_container_tag = $2
-                   AND EXISTS (SELECT 1 FROM chunks t
-                               WHERE t.org_id = $1 AND t.space_container_tag = $3
-                                 AND t.document_id = c.document_id AND t.content = c.content)",
+                "INSERT INTO chunk_containers (chunk_id, container_tag)
+                 SELECT membership.chunk_id, $3
+                 FROM chunk_containers membership
+                 JOIN chunks chunk ON chunk.id = membership.chunk_id
+                 WHERE chunk.org_id = $1 AND membership.container_tag = $2 AND $2 <> $3
+                 ON CONFLICT DO NOTHING",
             )
             .bind(org_id)
             .bind(tag)
@@ -270,8 +277,10 @@ impl Db {
             .await
             .map_err(db_err)?;
             sqlx::query(
-                "UPDATE chunks SET space_container_tag = $3
-                 WHERE org_id = $1 AND space_container_tag = $2",
+                "DELETE FROM chunk_containers membership
+                 USING chunks chunk
+                 WHERE membership.chunk_id = chunk.id
+                   AND chunk.org_id = $1 AND membership.container_tag = $2 AND $2 <> $3",
             )
             .bind(org_id)
             .bind(tag)
@@ -341,12 +350,17 @@ impl Db {
                     .execute(&mut *tx)
                     .await
                     .map_err(db_err)?;
-            sqlx::query("DELETE FROM chunks WHERE org_id = $1 AND space_container_tag = $2")
-                .bind(org_id)
-                .bind(tag)
-                .execute(&mut *tx)
-                .await
-                .map_err(db_err)?;
+            sqlx::query(
+                "DELETE FROM chunk_containers membership
+                 USING chunks chunk
+                 WHERE membership.chunk_id = chunk.id
+                   AND chunk.org_id = $1 AND membership.container_tag = $2",
+            )
+            .bind(org_id)
+            .bind(tag)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
             let removed = sqlx::query(
                 "DELETE FROM documents WHERE org_id=$1 AND $2=ANY(container_tags)
                  AND cardinality(container_tags)=1",

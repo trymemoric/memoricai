@@ -99,6 +99,8 @@ CREATE TABLE sync_runs (
 CREATE INDEX sync_runs_connection_idx ON sync_runs (connection_id);
 CREATE UNIQUE INDEX sync_runs_one_running_idx
     ON sync_runs (connection_id) WHERE status='running';
+CREATE INDEX connections_due_idx
+    ON connections (last_synced_at NULLS FIRST, id);
 
 -- ---------------- documents ----------------
 
@@ -134,6 +136,13 @@ CREATE INDEX documents_org_idx ON documents (org_id);
 CREATE INDEX documents_container_tags_idx ON documents USING gin (container_tags);
 CREATE INDEX documents_status_idx ON documents (status);
 CREATE INDEX documents_ingest_queue_idx ON documents (status, lease_until, updated_at);
+CREATE INDEX documents_org_created_idx
+    ON documents (org_id, created_at DESC, id);
+CREATE INDEX documents_org_status_created_idx
+    ON documents (org_id, status, created_at DESC, id);
+CREATE INDEX documents_org_connection_idx
+    ON documents (org_id, connection_id)
+    WHERE connection_id IS NOT NULL;
 
 -- ---------------- memories ----------------
 
@@ -175,6 +184,18 @@ CREATE UNIQUE INDEX memories_latest_per_root_idx
 CREATE INDEX memories_bucket_idx ON memories (org_id, space_container_tag, bucket_key);
 CREATE INDEX idx_memories_event_date
     ON memories (space_container_tag, event_date) WHERE event_date IS NOT NULL;
+CREATE INDEX memories_profile_static_idx
+    ON memories (org_id, space_container_tag, updated_at DESC, id)
+    WHERE is_latest AND NOT is_forgotten AND is_static;
+CREATE INDEX memories_profile_dynamic_idx
+    ON memories (org_id, space_container_tag, created_at DESC, id)
+    WHERE is_latest AND NOT is_forgotten AND NOT is_static;
+CREATE INDEX memories_bucket_created_idx
+    ON memories (org_id, space_container_tag, bucket_key, created_at DESC, id)
+    WHERE is_latest AND NOT is_forgotten AND bucket_key IS NOT NULL;
+CREATE INDEX memories_forget_after_idx
+    ON memories (forget_after)
+    WHERE forget_after IS NOT NULL AND NOT is_forgotten;
 
 CREATE TABLE memory_relations (
     source_memory_id text NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
@@ -187,18 +208,24 @@ CREATE INDEX memory_relations_target_idx ON memory_relations (target_memory_id);
 -- ---------------- chunks ----------------
 
 CREATE TABLE chunks (
-    id                  text PRIMARY KEY,
-    document_id         text NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    org_id              text NOT NULL,
-    space_container_tag text NOT NULL,
-    content             text NOT NULL,
-    chunk_type          text NOT NULL DEFAULT 'text',
-    position            int NOT NULL DEFAULT 0,
-    metadata            jsonb NOT NULL DEFAULT '{}',
-    created_at          timestamptz NOT NULL DEFAULT now()
+    id          text PRIMARY KEY,
+    document_id text NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    org_id      text NOT NULL,
+    content     text NOT NULL,
+    chunk_type  text NOT NULL DEFAULT 'text',
+    position    int NOT NULL DEFAULT 0,
+    metadata    jsonb NOT NULL DEFAULT '{}',
+    created_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX chunks_document_idx ON chunks (document_id);
-CREATE INDEX chunks_scope_idx ON chunks (org_id, space_container_tag);
+
+CREATE TABLE chunk_containers (
+    chunk_id      text NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+    container_tag text NOT NULL,
+    PRIMARY KEY (chunk_id, container_tag)
+);
+CREATE INDEX chunk_containers_tag_chunk_idx
+    ON chunk_containers (container_tag, chunk_id);
 
 -- ---------------- versioned embeddings ----------------
 

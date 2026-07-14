@@ -18,6 +18,10 @@ pub struct ExtractedFact {
     pub content: String,
     #[serde(default)]
     pub is_static: bool,
+    /// True only for an expressed user preference or setting. The built-in
+    /// preferences bucket can then be assigned without a second model call.
+    #[serde(default)]
+    pub is_preference: bool,
     #[serde(default)]
     pub forget_after: Option<String>,
     /// When the described event happened (ISO date), if the fact is about a
@@ -47,9 +51,11 @@ impl Engine {
         let mut system_prompt = String::from(
             "You extract atomic, self-contained facts (memories) from the user's content. \
              Respond ONLY with JSON of the form \
-             {\"memories\":[{\"content\":string,\"isStatic\":boolean,\"forgetAfter\":string|null,\
-             \"eventDate\":string|null}]}. \
+             {\"memories\":[{\"content\":string,\"isStatic\":boolean,\"isPreference\":boolean,\
+             \"forgetAfter\":string|null,\"eventDate\":string|null}]}. \
              Set isStatic=true for stable identity facts or lasting preferences. \
+             Set isPreference=true only when the user expresses a preference, favorite, \
+             configurable setting, or like/dislike; otherwise false. \
              Set forgetAfter to an ISO-8601 date if the fact is inherently time-bound, else null. \
              Set eventDate to the ISO-8601 date the described event happened or will happen \
              (the event's own date — resolve relative references like 'yesterday' against any \
@@ -390,13 +396,25 @@ impl Engine {
         org_id: &str,
         container_tag: &str,
         facts: &[String],
+        preference_flags: &[bool],
     ) -> Result<Vec<Option<String>>> {
         if facts.is_empty() {
             return Ok(Vec::new());
         }
+        if facts.len() != preference_flags.len() {
+            return Err(Error::Internal(
+                "bucket classification facts and preference flags are misaligned".into(),
+            ));
+        }
         let buckets = self.db.list_buckets(org_id, Some(container_tag)).await?;
         if buckets.is_empty() {
             return Ok(vec![None; facts.len()]);
+        }
+        let preference_fallback = preference_bucket_assignments(preference_flags);
+        // With only the built-in bucket, extraction already supplied the one
+        // decision we need. A classifier call cannot add routing information.
+        if buckets.len() == 1 && buckets[0].key == "preferences" {
+            return Ok(preference_fallback);
         }
         let listing = buckets
             .iter()
@@ -431,23 +449,14 @@ impl Engine {
         if let Some(assignments) = parse_bucket_assignments(&raw, &keys, facts.len()) {
             return Ok(assignments);
         }
-        // Malformed or mis-sized batch response: fall back to per-fact classification so we
-        // never do worse than the previous behaviour (only reached when the model doesn't
-        // honour the batch format, so the fan-out cost is confined to that rare case).
+        // Never fan a malformed batch out into one model call per fact. Preserve
+        // deterministic preference assignments and leave other facts unbucketed
+        // instead of allowing one malformed response to explode provider cost.
         tracing::warn!(
             container_tag,
-            "batched bucket classification response was malformed; falling back to per-fact"
+            "batched bucket classification response was malformed; using deterministic fallback"
         );
-        let mut out = Vec::with_capacity(facts.len());
-        for fact in facts {
-            out.push(
-                self.classify_bucket(org_id, container_tag, fact)
-                    .await
-                    .ok()
-                    .flatten(),
-            );
-        }
-        Ok(out)
+        Ok(preference_fallback)
     }
 
     /// Aggregate old memories into `[Summary]` entries (per bucket + general).
@@ -652,6 +661,13 @@ fn parse_bucket_assignments(
     )
 }
 
+fn preference_bucket_assignments(flags: &[bool]) -> Vec<Option<String>> {
+    flags
+        .iter()
+        .map(|is_preference| is_preference.then(|| "preferences".to_string()))
+        .collect()
+}
+
 pub(crate) fn parse_iso_date(s: &str) -> Option<Timestamp> {
     // Accept full RFC3339 or a bare date.
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
@@ -665,7 +681,7 @@ pub(crate) fn parse_iso_date(s: &str) -> Option<Timestamp> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_bucket_assignments;
+    use super::{parse_bucket_assignments, preference_bucket_assignments};
 
     const KEYS: &[&str] = &["preferences", "work"];
 
@@ -693,8 +709,8 @@ mod tests {
 
     #[test]
     fn wrong_length_signals_fallback() {
-        // Two assignments returned for three facts -> None, so the caller falls back
-        // to per-fact classification rather than misaligning buckets to facts.
+        // Two assignments returned for three facts -> None, so the caller uses the
+        // deterministic preference fallback rather than misaligning bucket keys.
         let raw = r#"{"assignments":["work","preferences"]}"#;
         assert!(parse_bucket_assignments(raw, KEYS, 3).is_none());
     }
@@ -711,5 +727,17 @@ mod tests {
         let raw = "Here you go: {\"assignments\":[\"work\"]} hope that helps";
         let got = parse_bucket_assignments(raw, KEYS, 1).expect("salvaged");
         assert_eq!(got, vec![Some("work".to_string())]);
+    }
+
+    #[test]
+    fn preference_flags_map_without_a_classifier_call() {
+        assert_eq!(
+            preference_bucket_assignments(&[true, false, true]),
+            vec![
+                Some("preferences".to_string()),
+                None,
+                Some("preferences".to_string())
+            ]
+        );
     }
 }

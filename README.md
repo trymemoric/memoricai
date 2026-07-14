@@ -63,9 +63,13 @@ export MEMORICAI_ENV=production
 export MEMORICAI_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 ./target/release/memoricai key create --org-name myorg --email me@example.com
 
-# 5. Run (migrations apply automatically on startup)
+# 5. Run (the database schema is installed automatically on first startup)
 ./target/release/memoricai serve
 ```
+
+MemoricAI currently supports clean database installs only. Schema upgrades from
+older releases are intentionally not maintained; recreate the database when the
+bundled schema changes.
 
 ```bash
 ./target/release/memoricai key create --org-name myorg --email me@example.com

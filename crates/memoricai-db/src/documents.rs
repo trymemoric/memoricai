@@ -721,42 +721,53 @@ impl Db {
             .await
             .map_err(db_err)?;
         if !chunk_drafts.is_empty() && !container_tags.is_empty() {
-            let count = chunk_drafts.len().saturating_mul(container_tags.len());
+            let count = chunk_drafts.len();
             let mut ids = Vec::with_capacity(count);
-            let mut tags = Vec::with_capacity(count);
             let mut contents = Vec::with_capacity(count);
             let mut chunk_types = Vec::with_capacity(count);
             let mut positions = Vec::with_capacity(count);
             let mut embeddings = Vec::with_capacity(count);
             let mut metadatas = Vec::with_capacity(count);
-            for tag in container_tags {
-                for (content, position, chunk_type, embedding, metadata) in chunk_drafts {
-                    ids.push(memoricai_core::ids::chunk_id());
-                    tags.push(tag.as_str());
-                    contents.push(content.as_str());
-                    chunk_types.push(chunk_type.as_str());
-                    positions.push(*position);
-                    embeddings.push(pgvec(embedding));
-                    metadatas.push(metadata);
-                }
+            for (content, position, chunk_type, embedding, metadata) in chunk_drafts {
+                ids.push(memoricai_core::ids::chunk_id());
+                contents.push(content.as_str());
+                chunk_types.push(chunk_type.as_str());
+                positions.push(*position);
+                embeddings.push(pgvec(embedding));
+                metadatas.push(metadata);
             }
             sqlx::query(
                 r#"INSERT INTO chunks
-                   (id, document_id, org_id, space_container_tag, content, chunk_type,
-                    position, metadata)
-                   SELECT t.id, $2, $3, t.tag, t.content, t.chunk_type, t.position, t.metadata
-                   FROM unnest($1::text[], $4::text[], $5::text[], $6::text[],
-                               $7::int4[], $8::jsonb[])
-                        AS t(id, tag, content, chunk_type, position, metadata)"#,
+                   (id, document_id, org_id, content, chunk_type, position, metadata)
+                   SELECT t.id, $2, $3, t.content, t.chunk_type, t.position, t.metadata
+                   FROM unnest($1::text[], $4::text[], $5::text[], $6::int4[], $7::jsonb[])
+                        AS t(id, content, chunk_type, position, metadata)"#,
             )
             .bind(&ids)
             .bind(document_id)
             .bind(org_id)
-            .bind(&tags)
             .bind(&contents)
             .bind(&chunk_types)
             .bind(&positions)
             .bind(&metadatas)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+            let membership_count = ids.len().saturating_mul(container_tags.len());
+            let mut membership_ids = Vec::with_capacity(membership_count);
+            let mut membership_tags = Vec::with_capacity(membership_count);
+            for tag in container_tags {
+                for id in &ids {
+                    membership_ids.push(id.as_str());
+                    membership_tags.push(tag.as_str());
+                }
+            }
+            sqlx::query(
+                "INSERT INTO chunk_containers (chunk_id, container_tag)
+                 SELECT * FROM unnest($1::text[], $2::text[])",
+            )
+            .bind(&membership_ids)
+            .bind(&membership_tags)
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
@@ -823,11 +834,44 @@ impl Db {
         threshold: f32,
         doc_id: Option<&str>,
     ) -> Result<Vec<ChunkScore>> {
+        let vector_column = if tags.is_some() {
+            "scoped.embedding"
+        } else {
+            "ce.embedding"
+        };
         let (stored_vector, query_vector) =
-            crate::embeddings::vector_search_operands("ce.embedding", embedding_dimension)?;
+            crate::embeddings::vector_search_operands(vector_column, embedding_dimension)?;
         let index_id = crate::embeddings::sql_text_literal(embedding_index_id);
-        let sql = format!(
-            r#"SELECT c.document_id, c.content, d.metadata AS doc_metadata,
+        let sql = if tags.is_some() {
+            // pgvector applies ordinary WHERE filters after an approximate HNSW scan. A
+            // membership-table filter can therefore exhaust the ANN candidate list before
+            // finding k rows from a small container. Materialize the authorized subset and
+            // rank it exactly so changing the storage representation cannot change recall.
+            format!(
+                r#"WITH scoped AS MATERIALIZED (
+                       SELECT c.document_id, c.content, d.metadata AS doc_metadata, ce.embedding
+                       FROM chunks c
+                       JOIN chunk_embeddings ce
+                         ON ce.chunk_id=c.id AND ce.index_id={index_id}
+                       JOIN documents d ON d.id=c.document_id AND d.org_id=c.org_id
+                       WHERE c.org_id=$2 AND d.status='done'
+                         AND EXISTS (
+                             SELECT 1 FROM chunk_containers membership
+                             WHERE membership.chunk_id=c.id
+                               AND membership.container_tag=ANY($3)
+                         )
+                         AND ($4::text IS NULL OR c.document_id=$4)
+                   )
+                   SELECT scoped.document_id, scoped.content, scoped.doc_metadata,
+                          1 - ({stored_vector} <=> {query_vector}) AS similarity
+                   FROM scoped
+                   WHERE 1 - ({stored_vector} <=> {query_vector}) >= $5
+                   ORDER BY {stored_vector} <=> {query_vector}
+                   LIMIT $6"#,
+            )
+        } else {
+            format!(
+                r#"SELECT c.document_id, c.content, d.metadata AS doc_metadata,
                       1 - ({stored_vector} <=> {query_vector}) AS similarity
                FROM chunks c
                JOIN chunk_embeddings ce ON ce.chunk_id=c.id AND ce.index_id={index_id}
@@ -836,12 +880,13 @@ impl Db {
                  -- Only surface chunks of fully-indexed documents (a failed / in-progress
                  -- reindex must not appear in results).
                  AND d.status = 'done'
-                 AND ($3::text[] IS NULL OR c.space_container_tag = ANY($3))
+                 AND $3::text[] IS NULL
                  AND ($4::text IS NULL OR c.document_id = $4)
                  AND 1 - ({stored_vector} <=> {query_vector}) >= $5
                ORDER BY {stored_vector} <=> {query_vector}
                LIMIT $6"#,
-        );
+            )
+        };
         let rows = sqlx::query(&sql)
             .bind(pgvec(qvec))
             .bind(org_id)

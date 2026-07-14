@@ -10,7 +10,7 @@ The workspace has strictly downward dependencies (no cycles):
 | Crate | Responsibility |
 |---|---|
 | `memoricai-core` | Pure domain: `Document`/`Memory`/`Chunk`/`Space`/`Profile`, enums, the `/v1` wire DTOs, the `MetadataFilter` AST, typed errors, and the provider **trait ports** (`LlmProvider`, `EmbeddingProvider`, `Reranker`, `Transcriber`, `Vision`). No I/O. |
-| `memoricai-db` | sqlx repositories + SQL migrations over Postgres. pgvector is used through raw SQL casts (`$n::vector`, `<=>`), so the embedding dimension stays configurable and no pgvector crate is required. Only runtime queries, building never needs a live database. |
+| `memoricai-db` | sqlx repositories + a canonical clean-install SQL schema over Postgres. pgvector is used through raw SQL casts (`$n::vector`, `<=>`), so the embedding dimension stays configurable and no pgvector crate is required. Only runtime queries, building never needs a live database. |
 | `memoricai-models` | The pluggable model layer. `ModelStack` bundles an LLM, an embedder, a reranker, and optional transcriber/vision. Provider: an OpenAI-compatible client (covers OpenAI/Ollama/vLLM/LM Studio/…). Chat + embedding endpoints are required at startup; tests use a deterministic in-process fake (`ModelStack::for_tests`). |
 | `memoricai-engine` | The ingestion pipeline, memory extraction, temporal graph, search, and profiles. `Engine` is the facade every higher layer builds on. |
 | `memoricai-auth` | API-key minting/introspection (argon2-hashed, O(1) prefix lookup), container-scoped keys, a fixed-window rate limiter, tenant policy, and a full OAuth2/OIDC provider. |
@@ -48,7 +48,9 @@ The workspace has strictly downward dependencies (no cycles):
 4. **Embedding**, batched, provider ordering/count/dimension/numeric output validated, then
    L2-normalized (so cosine == dot product).
 5. **Memory extraction**, a constrained-JSON LLM call turns content into atomic facts
-   (with `isStatic` and optional `forgetAfter`). Organization category/include/exclude/filter
+   (with `isStatic`, `isPreference`, and optional `forgetAfter`). The built-in preference
+   bucket is assigned from that response without a second model call; custom multi-bucket
+   configurations use one batched classifier call. Organization category/include/exclude/filter
    settings are applied to the extraction prompt and enforced after parsing.
 6. **Relation inference + versioning**, each new fact is compared to its nearest neighbors;
    high similarity supersedes the old memory (a new version, predecessor marked not-latest,
@@ -67,7 +69,8 @@ records the organization, provider, model id, model version, and dimension. This
 spaces isolated while retained memory/chunk text remains model-independent. Vectors use
 dimensionless pgvector columns; metadata uses `JSONB`; enums use text with fallbacks. Key
 structures: `documents`, `memories` (+ `memory_relations` edge table, version-chain columns),
-`chunks`, `embedding_indexes`/`embedding_backfill_jobs`, `spaces`,
+`chunks`/`chunk_containers` (one physical chunk/vector shared across container memberships),
+`embedding_indexes`/`embedding_backfill_jobs`, `spaces`,
 `profile_buckets`/`profile_summaries`, identity tables
 (`users`/`organizations`/`members`/`api_keys`), OAuth tables, `connections`/`sync_runs`, and an
 `api_requests` analytics log.

@@ -21,17 +21,11 @@ use memoricai_core::model::{Document, Memory};
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{Executor, PgPool, Row};
 
-/// Embedded migrations, applied in order. Kept as `include_str!` so the binary
-/// stays self-contained without depending on sqlx's `macros` feature, which
-/// pulls in unused MySQL support and the vulnerable `rsa` crate
-/// (RUSTSEC-2023-0071).
-const MIGRATIONS: &[(&str, &str)] = &[
-    ("0001_init", include_str!("../migrations/0001_init.sql")),
-    (
-        "0002_performance",
-        include_str!("../migrations/0002_performance.sql"),
-    ),
-];
+/// Canonical schema for a fresh installation. Existing schemas are deliberately
+/// not upgraded: this release requires recreating the database. `include_str!`
+/// keeps the binary self-contained without enabling sqlx's macros feature.
+const SCHEMA_VERSION: &str = "schema_v1";
+const SCHEMA_SQL: &str = include_str!("../migrations/0001_init.sql");
 
 #[derive(Clone)]
 pub struct Db {
@@ -58,8 +52,7 @@ impl Db {
         Ok(Self { pool })
     }
 
-    /// Apply not-yet-applied embedded migrations under a database advisory lock,
-    /// tracked in a `schema_migrations` table.
+    /// Install the canonical schema once under a database advisory lock.
     pub async fn migrate(&self) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         // Serialize startup migrations across replicas. The transaction-scoped
@@ -75,23 +68,21 @@ impl Db {
         .await
         .map_err(db_err)?;
 
-        for (version, sql) in MIGRATIONS {
-            let already: Option<String> =
-                sqlx::query_scalar("SELECT version FROM schema_migrations WHERE version = $1")
-                    .bind(version)
-                    .fetch_optional(&mut *tx)
-                    .await
-                    .map_err(db_err)?;
-            if already.is_some() {
-                continue;
-            }
-            // Migration files hold multiple `;`-separated statements, so run them
-            // through the simple-query protocol (a `&str` executes as one batch).
-            tx.execute(*sql)
+        let installed: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)",
+        )
+        .bind(SCHEMA_VERSION)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        if !installed {
+            // The schema contains multiple statements, so execute it through the
+            // simple-query protocol as one transactional batch.
+            tx.execute(SCHEMA_SQL)
                 .await
-                .map_err(|e| Error::Database(format!("migration {version}: {e}")))?;
+                .map_err(|e| Error::Database(format!("installing schema: {e}")))?;
             sqlx::query("INSERT INTO schema_migrations (version) VALUES ($1)")
-                .bind(version)
+                .bind(SCHEMA_VERSION)
                 .execute(&mut *tx)
                 .await
                 .map_err(db_err)?;

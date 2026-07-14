@@ -32,9 +32,21 @@ impl LlmProvider for DeterministicLlm {
                 .into_iter()
                 .map(|f| {
                     let event_date = find_iso_date(&f);
+                    let normalized = f.to_ascii_lowercase();
+                    let is_preference = [
+                        "prefer",
+                        "favorite",
+                        "favourite",
+                        "i like",
+                        "i love",
+                        "i dislike",
+                    ]
+                    .iter()
+                    .any(|marker| normalized.contains(marker));
                     serde_json::json!({
                         "content": f,
                         "isStatic": false,
+                        "isPreference": is_preference,
                         "forgetAfter": null,
                         "eventDate": event_date,
                     })

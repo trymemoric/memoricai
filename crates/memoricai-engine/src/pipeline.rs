@@ -12,6 +12,7 @@ struct PreparedFact {
     content: String,
     embedding: Vec<f32>,
     is_static: bool,
+    is_preference: bool,
     forget_after: Option<chrono::DateTime<chrono::Utc>>,
     event_date: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -119,6 +120,7 @@ impl Engine {
                     content: fact.content,
                     embedding,
                     is_static: fact.is_static,
+                    is_preference: fact.is_preference,
                     forget_after: fact
                         .forget_after
                         .as_deref()
@@ -145,10 +147,15 @@ impl Engine {
                 continue;
             }
             let fact_texts: Vec<String> = facts.iter().map(|fact| fact.content.clone()).collect();
+            let preference_flags: Vec<bool> = facts.iter().map(|fact| fact.is_preference).collect();
+            let deterministic_buckets = preference_flags
+                .iter()
+                .map(|flag| flag.then(|| "preferences".to_string()))
+                .collect::<Vec<_>>();
             let bucket_keys = self
-                .classify_buckets_batch(&org_id, tag, &fact_texts)
+                .classify_buckets_batch(&org_id, tag, &fact_texts, &preference_flags)
                 .await
-                .unwrap_or_else(|_| vec![None; facts.len()]);
+                .unwrap_or(deterministic_buckets);
             for (fact, bucket_key) in facts.iter().zip(bucket_keys) {
                 prepared_memories.push(memoricai_db::memories::ExtractedMemoryDraft {
                     user_id: doc.user_id.clone(),

@@ -29,7 +29,7 @@ struct Cli {
 enum Command {
     /// Run the HTTP API + MCP server.
     Serve,
-    /// Apply database migrations and exit.
+    /// Install the database schema and exit.
     Migrate,
     /// Mint a new organization + API key and print it.
     Key {
@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Migrate => {
             let db = Db::connect(&config.database_url).await?;
             db.migrate().await?;
-            tracing::info!("migrations applied");
+            tracing::info!("database schema ready");
         }
         Command::Key {
             action: KeyAction::Create { org_name, email },

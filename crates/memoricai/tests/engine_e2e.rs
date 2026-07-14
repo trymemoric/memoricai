@@ -32,7 +32,14 @@ async fn ingest_search_profile_end_to_end() {
         .await
         .expect("bootstrap");
     let tag = format!("mc_project_{}", &org.id[4..12]);
+    let second_tag = format!("{tag}_shared");
 
+    let embedding_index = db
+        .ensure_embedding_index(&org.id, "hash-embedder", "test-v1", "memoricai-test", 64)
+        .await
+        .expect("embedding index");
+    // Create the index before spawning the engine's backfill worker so the test
+    // does not race two first-index transactions and intermittently deadlock.
     let models = Arc::new(ModelStack::for_tests(64));
     let engine = Engine::new(
         db.clone(),
@@ -42,17 +49,15 @@ async fn ingest_search_profile_end_to_end() {
             chunk_chars: 400,
         },
     );
-    let embedding_index = db
-        .ensure_embedding_index(&org.id, "hash-embedder", "test-v1", "memoricai-test", 64)
-        .await
-        .expect("embedding index");
 
     // Ingest (accept-instantly) then let the background worker finish.
     let req = IngestRequest {
-        content: "My name is Grace Hopper and I invented the first compiler.".into(),
+        content: "My name is Grace Hopper and I invented the first compiler. \
+                  I prefer readable compiler diagnostics."
+            .into(),
         custom_id: None,
-        container_tag: Some(tag.clone()),
-        container_tags: None,
+        container_tag: None,
+        container_tags: Some(vec![tag.clone(), second_tag.clone()]),
         metadata: None,
         entity_context: None,
         content_type: None,
@@ -105,6 +110,32 @@ async fn ingest_search_profile_end_to_end() {
     .expect("count versioned chunk vectors");
     assert!(memory_vector_count > 0);
     assert!(chunk_vector_count > 0);
+    let physical_chunk_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM chunks WHERE document_id=$1")
+            .bind(&id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("count physical chunks");
+    let membership_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chunk_containers membership
+         JOIN chunks chunk ON chunk.id=membership.chunk_id
+         WHERE chunk.document_id=$1",
+    )
+    .bind(&id)
+    .fetch_one(&db.pool)
+    .await
+    .expect("count chunk memberships");
+    assert_eq!(chunk_vector_count, physical_chunk_count);
+    assert_eq!(membership_count, physical_chunk_count * 2);
+    let preference_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM memories
+         WHERE document_id=$1 AND bucket_key='preferences'",
+    )
+    .bind(&id)
+    .fetch_one(&db.pool)
+    .await
+    .expect("count deterministic preference assignments");
+    assert!(preference_count > 0);
 
     // Removing one derived vector queues a durable repair from retained text;
     // the background worker restores it without re-ingesting the document.
@@ -172,6 +203,42 @@ async fn ingest_search_profile_end_to_end() {
         digest.contains("Grace") && digest.contains("## "),
         "digest should contain the fact under a date header, got {digest:?}"
     );
+    let shared_res = engine
+        .search_memories(
+            &org.id,
+            &MemorySearchRequest {
+                container_tag: Some(second_tag.clone()),
+                ..sreq.clone()
+            },
+            None,
+        )
+        .await
+        .expect("search shared container");
+    assert!(
+        shared_res.results.iter().any(|result| {
+            result.memory.as_deref().unwrap_or("").contains("Grace")
+                || result.chunk.as_deref().unwrap_or("").contains("Grace")
+        }),
+        "shared container should resolve the same physical chunks"
+    );
+    let shared_space = db
+        .get_space(&org.id, &second_tag)
+        .await
+        .expect("get shared space")
+        .expect("shared space exists");
+    db.delete_space(&org.id, &shared_space.id, "move", Some(&tag))
+        .await
+        .expect("move shared space");
+    let membership_count_after_move: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chunk_containers membership
+         JOIN chunks chunk ON chunk.id=membership.chunk_id
+         WHERE chunk.document_id=$1",
+    )
+    .bind(&id)
+    .fetch_one(&db.pool)
+    .await
+    .expect("count memberships after move");
+    assert_eq!(membership_count_after_move, physical_chunk_count);
 
     // Context assembly combines the digest with bounded, provenance-bearing excerpts.
     let context = engine
