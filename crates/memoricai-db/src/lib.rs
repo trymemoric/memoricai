@@ -25,7 +25,13 @@ use sqlx::{Executor, PgPool, Row};
 /// stays self-contained without depending on sqlx's `macros` feature, which
 /// pulls in unused MySQL support and the vulnerable `rsa` crate
 /// (RUSTSEC-2023-0071).
-const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_init", include_str!("../migrations/0001_init.sql")),
+    (
+        "0002_performance",
+        include_str!("../migrations/0002_performance.sql"),
+    ),
+];
 
 #[derive(Clone)]
 pub struct Db {
@@ -91,6 +97,9 @@ impl Db {
                 .map_err(db_err)?;
         }
         tx.commit().await.map_err(db_err)?;
+        // HNSW indexes must be created outside the migration transaction because
+        // CREATE INDEX CONCURRENTLY is illegal inside a transaction block.
+        self.ensure_all_ann_indexes().await?;
         Ok(())
     }
 }

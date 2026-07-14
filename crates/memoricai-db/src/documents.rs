@@ -11,6 +11,15 @@ use std::collections::HashMap;
 /// A chunk ready to persist: (content, position, chunk_type, embedding, metadata).
 pub type ChunkDraft = (String, i32, String, Vec<f32>, Value);
 
+// `raw` can be as large as the source document and is intentionally excluded:
+// no Document API field consumes it. Search-only projections also omit content.
+const DOCUMENT_COLUMNS: &str = "id, custom_id, content_hash, org_id, user_id, connection_id, \
+    title, summary, content, url, source, doc_type, status, metadata, container_tags, \
+    token_count, chunk_count, created_at, updated_at";
+const DOCUMENT_SUMMARY_COLUMNS: &str = "id, custom_id, content_hash, org_id, user_id, connection_id, \
+    title, summary, NULL::text AS content, url, source, doc_type, status, metadata, container_tags, \
+    token_count, chunk_count, created_at, updated_at";
+
 impl Db {
     pub async fn insert_document(&self, doc: &Document, raw: Option<&str>) -> Result<()> {
         sqlx::query(
@@ -48,14 +57,16 @@ impl Db {
 
     /// Fetch a document by internal id or customId within an org.
     pub async fn get_document(&self, org_id: &str, id_or_custom: &str) -> Result<Document> {
-        let row = sqlx::query(
-            "SELECT * FROM documents WHERE org_id = $1 AND (id = $2 OR custom_id = $2) LIMIT 1",
-        )
-        .bind(org_id)
-        .bind(id_or_custom)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_err)?;
+        let sql = format!(
+            "SELECT {DOCUMENT_COLUMNS} FROM documents \
+             WHERE org_id = $1 AND (id = $2 OR custom_id = $2) LIMIT 1"
+        );
+        let row = sqlx::query(&sql)
+            .bind(org_id)
+            .bind(id_or_custom)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?;
         row.as_ref()
             .map(map_document)
             .ok_or_else(|| Error::NotFound(format!("document {id_or_custom}")))
@@ -63,7 +74,8 @@ impl Db {
 
     /// Fetch a document by internal id across any tenant (used by ingest workers).
     pub async fn get_document_by_id(&self, id: &str) -> Result<Document> {
-        let row = sqlx::query("SELECT * FROM documents WHERE id = $1")
+        let sql = format!("SELECT {DOCUMENT_COLUMNS} FROM documents WHERE id = $1");
+        let row = sqlx::query(&sql)
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -78,25 +90,73 @@ impl Db {
         org_id: &str,
         custom_id: &str,
     ) -> Result<Option<Document>> {
-        let row =
-            sqlx::query("SELECT * FROM documents WHERE org_id = $1 AND custom_id = $2 LIMIT 1")
-                .bind(org_id)
-                .bind(custom_id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db_err)?;
+        let sql = format!(
+            "SELECT {DOCUMENT_SUMMARY_COLUMNS} FROM documents \
+             WHERE org_id = $1 AND custom_id = $2 LIMIT 1"
+        );
+        let row = sqlx::query(&sql)
+            .bind(org_id)
+            .bind(custom_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?;
         Ok(row.as_ref().map(map_document))
     }
 
-    pub async fn documents_by_ids(&self, org_id: &str, ids: &[String]) -> Result<Vec<Document>> {
-        let rows = sqlx::query(
-            "SELECT * FROM documents WHERE org_id = $1 AND (id = ANY($2) OR custom_id = ANY($2))",
+    pub async fn document_exists_by_custom_id(
+        &self,
+        org_id: &str,
+        custom_id: &str,
+    ) -> Result<bool> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM documents WHERE org_id=$1 AND custom_id=$2)",
         )
         .bind(org_id)
-        .bind(ids)
-        .fetch_all(&self.pool)
+        .bind(custom_id)
+        .fetch_one(&self.pool)
         .await
-        .map_err(db_err)?;
+        .map_err(db_err)
+    }
+
+    pub async fn documents_by_ids(&self, org_id: &str, ids: &[String]) -> Result<Vec<Document>> {
+        self.documents_by_ids_projected(org_id, ids, true).await
+    }
+
+    /// Batch-fetch documents without their large content field when callers only
+    /// need metadata, dates, titles, or source attribution.
+    pub async fn document_summaries_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<Document>> {
+        self.documents_by_ids_projected(org_id, ids, false).await
+    }
+
+    async fn documents_by_ids_projected(
+        &self,
+        org_id: &str,
+        ids: &[String],
+        include_content: bool,
+    ) -> Result<Vec<Document>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let columns = if include_content {
+            DOCUMENT_COLUMNS
+        } else {
+            DOCUMENT_SUMMARY_COLUMNS
+        };
+        let sql = format!(
+            "SELECT {columns} FROM documents \
+             WHERE org_id = $1 AND (id = ANY($2) OR custom_id = ANY($2))"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(org_id)
+            .bind(ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
         Ok(rows.iter().map(map_document).collect())
     }
 
@@ -207,15 +267,15 @@ impl Db {
         metadata: Option<&Value>,
         allowed_tags: Option<&[String]>,
     ) -> Result<Document> {
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "UPDATE documents SET content=$3, content_hash=$4,
                     metadata=COALESCE($5,metadata), status='queued', processing_attempts=0,
                     lease_until=NULL, lease_token=NULL, last_error=NULL, updated_at=now()
              WHERE org_id=$1 AND (id=$2 OR custom_id=$2)
                AND status NOT IN ('extracting','chunking','embedding','indexing')
                AND ($6::text[] IS NULL OR container_tags <@ $6)
-             RETURNING *",
-        )
+             RETURNING {DOCUMENT_COLUMNS}"
+        ))
         .bind(org_id)
         .bind(id)
         .bind(content)
@@ -265,7 +325,7 @@ impl Db {
         url: Option<&str>,
         allowed_tags: Option<&[String]>,
     ) -> Result<Document> {
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "UPDATE documents SET content=$3, content_hash=$4, metadata=$5,
                     title=$6, doc_type=$7, container_tags=$8, connection_id=$9,
                     source=$10, url=$11, status='queued', processing_attempts=0,
@@ -273,8 +333,8 @@ impl Db {
              WHERE org_id=$1 AND id=$2
                AND status NOT IN ('extracting','chunking','embedding','indexing')
                AND ($12::text[] IS NULL OR container_tags <@ $12)
-             RETURNING *",
-        )
+             RETURNING {DOCUMENT_COLUMNS}"
+        ))
         .bind(org_id)
         .bind(id)
         .bind(content)
@@ -322,13 +382,13 @@ impl Db {
         metadata: Option<&Value>,
         allowed_tags: Option<&[String]>,
     ) -> Result<Document> {
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "UPDATE documents SET content = COALESCE($3, content),
              metadata = COALESCE($4, metadata), updated_at = now()
              WHERE org_id = $1 AND (id = $2 OR custom_id = $2)
                AND ($5::text[] IS NULL OR container_tags <@ $5)
-             RETURNING *",
-        )
+             RETURNING {DOCUMENT_COLUMNS}"
+        ))
         .bind(org_id)
         .bind(id)
         .bind(content)
@@ -357,14 +417,16 @@ impl Db {
         allowed_tags: Option<&[String]>,
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let row = sqlx::query(
-            "SELECT * FROM documents WHERE org_id=$1 AND (id=$2 OR custom_id=$2) FOR UPDATE",
-        )
-        .bind(org_id)
-        .bind(id_or_custom)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db_err)?;
+        let sql = format!(
+            "SELECT {DOCUMENT_SUMMARY_COLUMNS} FROM documents \
+             WHERE org_id=$1 AND (id=$2 OR custom_id=$2) FOR UPDATE"
+        );
+        let row = sqlx::query(&sql)
+            .bind(org_id)
+            .bind(id_or_custom)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?;
         let Some(row) = row.as_ref() else {
             tx.rollback().await.map_err(db_err)?;
             return Ok(false);
@@ -462,17 +524,18 @@ impl Db {
         org_id: &str,
         tags: Option<&[String]>,
     ) -> Result<Vec<Document>> {
-        let rows = sqlx::query(
-            "SELECT * FROM documents WHERE org_id = $1
+        let sql = format!(
+            "SELECT {DOCUMENT_COLUMNS} FROM documents WHERE org_id = $1
              AND ($2::text[] IS NULL OR container_tags && $2)
              AND status IN ('queued','extracting','chunking','embedding','indexing')
-             ORDER BY created_at DESC LIMIT 200",
-        )
-        .bind(org_id)
-        .bind(tags)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
+             ORDER BY created_at DESC LIMIT 200"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(org_id)
+            .bind(tags)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
         Ok(rows.iter().map(map_document).collect())
     }
 
@@ -506,7 +569,8 @@ impl Db {
         let count_q = sqlx::query(&count_sql).bind(org_id).bind(tags).bind(status);
 
         let list_sql = format!(
-            "SELECT * FROM documents {where_sql} ORDER BY {sort_col} {order_kw} LIMIT $4 OFFSET $5"
+            "SELECT {DOCUMENT_COLUMNS} FROM documents {where_sql} \
+             ORDER BY {sort_col} {order_kw} LIMIT $4 OFFSET $5"
         );
         let rows_q = sqlx::query(&list_sql)
             .bind(org_id)
@@ -719,6 +783,7 @@ impl Db {
             document_id,
             org_id,
             embedding_index_id,
+            embedding_dimension,
             memory_drafts,
         )
         .await?;
@@ -751,38 +816,42 @@ impl Db {
         &self,
         org_id: &str,
         embedding_index_id: &str,
+        embedding_dimension: usize,
         tags: Option<&[String]>,
         qvec: &[f32],
         k: i64,
         threshold: f32,
         doc_id: Option<&str>,
     ) -> Result<Vec<ChunkScore>> {
-        let rows = sqlx::query(
+        let (stored_vector, query_vector) =
+            crate::embeddings::vector_search_operands("ce.embedding", embedding_dimension)?;
+        let index_id = crate::embeddings::sql_text_literal(embedding_index_id);
+        let sql = format!(
             r#"SELECT c.document_id, c.content, d.metadata AS doc_metadata,
-                      1 - (ce.embedding <=> $1::vector) AS similarity
+                      1 - ({stored_vector} <=> {query_vector}) AS similarity
                FROM chunks c
-               JOIN chunk_embeddings ce ON ce.chunk_id=c.id AND ce.index_id=$3
+               JOIN chunk_embeddings ce ON ce.chunk_id=c.id AND ce.index_id={index_id}
                JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id
                WHERE c.org_id = $2
                  -- Only surface chunks of fully-indexed documents (a failed / in-progress
                  -- reindex must not appear in results).
                  AND d.status = 'done'
-                 AND ($4::text[] IS NULL OR c.space_container_tag = ANY($4))
-                 AND ($5::text IS NULL OR c.document_id = $5)
-                 AND 1 - (ce.embedding <=> $1::vector) >= $6
-               ORDER BY ce.embedding <=> $1::vector
-               LIMIT $7"#,
-        )
-        .bind(pgvec(qvec))
-        .bind(org_id)
-        .bind(embedding_index_id)
-        .bind(tags)
-        .bind(doc_id)
-        .bind(threshold as f64)
-        .bind(k)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
+                 AND ($3::text[] IS NULL OR c.space_container_tag = ANY($3))
+                 AND ($4::text IS NULL OR c.document_id = $4)
+                 AND 1 - ({stored_vector} <=> {query_vector}) >= $5
+               ORDER BY {stored_vector} <=> {query_vector}
+               LIMIT $6"#,
+        );
+        let rows = sqlx::query(&sql)
+            .bind(pgvec(qvec))
+            .bind(org_id)
+            .bind(tags)
+            .bind(doc_id)
+            .bind(threshold as f64)
+            .bind(k)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
 
         Ok(rows
             .iter()

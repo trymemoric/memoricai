@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
-use memoricai_api::{build_router, AppState};
+use memoricai_api::{build_router, AnalyticsWriter, AppState};
 use memoricai_auth::AuthService;
 use memoricai_db::Db;
 use memoricai_engine::{Engine, EngineConfig};
@@ -27,10 +27,11 @@ async fn state_with_provision_key(db: Db, provision_key: Option<&str>) -> AppSta
             chunk_chars: 400,
         },
     );
-    let auth = Arc::new(AuthService::new(db));
+    let auth = Arc::new(AuthService::new(db.clone()));
     AppState {
         engine,
         auth,
+        analytics: AnalyticsWriter::new(db),
         request_body_timeout: std::time::Duration::from_secs(30),
         router_allowed_origins: Arc::new(Vec::new()),
         provision_key: provision_key.map(Arc::from),

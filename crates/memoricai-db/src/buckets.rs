@@ -4,6 +4,7 @@ use crate::{db_err, map_memory, Db};
 use memoricai_core::error::Result;
 use memoricai_core::model::{Memory, ProfileBucket};
 use sqlx::Row;
+use std::collections::HashMap;
 
 impl Db {
     pub async fn create_bucket(
@@ -110,6 +111,47 @@ impl Db {
         .await
         .map_err(db_err)?;
         Ok(rows.iter().map(map_memory).collect())
+    }
+
+    pub async fn memories_in_buckets(
+        &self,
+        org_id: &str,
+        container_tag: &str,
+        bucket_keys: &[String],
+        limit_per_bucket: i64,
+    ) -> Result<HashMap<String, Vec<Memory>>> {
+        if bucket_keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query(
+            "WITH ranked AS (
+               SELECT memories.*, row_number() OVER (
+                   PARTITION BY bucket_key ORDER BY created_at DESC, id) AS bucket_position
+               FROM memories
+               WHERE org_id=$1 AND space_container_tag=$2 AND bucket_key=ANY($3)
+                 AND is_latest AND NOT is_forgotten
+                 AND (document_id IS NULL OR EXISTS (
+                      SELECT 1 FROM documents d
+                      WHERE d.id=memories.document_id AND d.status='done'))
+             )
+             SELECT * FROM ranked WHERE bucket_position <= $4
+             ORDER BY bucket_key, bucket_position",
+        )
+        .bind(org_id)
+        .bind(container_tag)
+        .bind(bucket_keys)
+        .bind(limit_per_bucket)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        let mut grouped: HashMap<String, Vec<Memory>> = HashMap::new();
+        for row in &rows {
+            grouped
+                .entry(row.get("bucket_key"))
+                .or_default()
+                .push(map_memory(row));
+        }
+        Ok(grouped)
     }
 
     pub async fn upsert_profile_summary(

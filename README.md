@@ -262,7 +262,10 @@ memoricai (bin)          composition root, CLI, background workers, :7373
 └── memoricai-core       pure domain types, DTOs, MetadataFilter AST, trait ports
 ```
 
-Vector search is an **exact scan** over pgvector cosine distance, correct at any scale, fast at small scale. Add HNSW/IVFFlat indexes per deployment once your embedding dimension is fixed.
+Vector search uses a dimension-aware, per-model **HNSW cosine index**. Because embedding
+dimensions are runtime-configurable, memoricai creates a partial expression index for each
+registered embedding model/version. Spaces up to 2,000 dimensions use `vector`; spaces up to
+4,000 use the indexed `halfvec` representation. Larger spaces retain exact cosine search.
 
 ## Development
 

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use config::Config;
-use memoricai_api::AppState;
+use memoricai_api::{AnalyticsWriter, AppState};
 use memoricai_auth::AuthService;
 use memoricai_db::Db;
 use memoricai_engine::{Engine, EngineConfig};
@@ -211,6 +211,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let state = AppState {
         engine: engine.clone(),
         auth: auth.clone(),
+        analytics: AnalyticsWriter::new(db.clone()),
         request_body_timeout: config.request_body_timeout,
         router_allowed_origins: Arc::new(config.router_allowed_origins),
         provision_key,

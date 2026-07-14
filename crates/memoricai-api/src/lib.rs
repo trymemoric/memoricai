@@ -18,12 +18,60 @@ use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use memoricai_auth::AuthService;
 use memoricai_core::model::AuthContext;
+use memoricai_db::auth::ApiRequestRecord;
 use memoricai_engine::Engine;
+
+const ANALYTICS_CHANNEL_CAPACITY: usize = 8_192;
+const ANALYTICS_BATCH_SIZE: usize = 250;
+const ANALYTICS_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+#[derive(Clone)]
+pub struct AnalyticsWriter {
+    sender: tokio::sync::mpsc::Sender<ApiRequestRecord>,
+}
+
+impl AnalyticsWriter {
+    pub fn new(db: memoricai_db::Db) -> Self {
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::channel::<ApiRequestRecord>(ANALYTICS_CHANNEL_CAPACITY);
+        tokio::spawn(async move {
+            while let Some(first) = receiver.recv().await {
+                let mut batch = Vec::with_capacity(ANALYTICS_BATCH_SIZE);
+                batch.push(first);
+                let deadline = tokio::time::sleep(ANALYTICS_FLUSH_INTERVAL);
+                tokio::pin!(deadline);
+                while batch.len() < ANALYTICS_BATCH_SIZE {
+                    tokio::select! {
+                        biased;
+                        record = receiver.recv() => match record {
+                            Some(record) => batch.push(record),
+                            None => break,
+                        },
+                        () = &mut deadline => break,
+                    }
+                }
+                if let Err(error) = db.log_requests_batch(&batch).await {
+                    tracing::warn!(records = batch.len(), %error, "failed to persist API analytics batch");
+                }
+            }
+        });
+        Self { sender }
+    }
+
+    fn record(&self, record: ApiRequestRecord) {
+        if self.sender.try_send(record).is_err() {
+            // Analytics is deliberately lossy under overload so it cannot become
+            // backpressure on user traffic.
+            tracing::debug!("dropping API analytics record because the queue is full");
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub engine: Engine,
     pub auth: Arc<AuthService>,
+    pub analytics: AnalyticsWriter,
     pub request_body_timeout: std::time::Duration,
     /// Exact upstream origins permitted for the Memory Router. Empty = public HTTPS only.
     pub router_allowed_origins: Arc<Vec<String>>,
@@ -146,18 +194,14 @@ async fn access_log(
     let (org, user, key) = identity
         .map(|(org, user, key)| (Some(org), user, key))
         .unwrap_or((None, None, None));
-    let _ = state
-        .engine
-        .db
-        .log_request(
-            &req_type,
-            org.as_deref(),
-            user.as_deref(),
-            key.as_deref(),
-            status,
-            duration,
-        )
-        .await;
+    state.analytics.record(ApiRequestRecord {
+        request_type: req_type,
+        org_id: org,
+        user_id: user,
+        key_id: key,
+        status_code: status,
+        duration_ms: duration,
+    });
     resp
 }
 

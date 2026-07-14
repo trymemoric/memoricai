@@ -7,6 +7,16 @@ use memoricai_core::model::{ApiKeyRecord, Membership, Organization, User};
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 
+#[derive(Debug, Clone)]
+pub struct ApiRequestRecord {
+    pub request_type: String,
+    pub org_id: Option<String>,
+    pub user_id: Option<String>,
+    pub key_id: Option<String>,
+    pub status_code: i32,
+    pub duration_ms: i64,
+}
+
 fn map_user(row: &PgRow) -> User {
     User {
         id: row.get("id"),
@@ -217,17 +227,57 @@ impl Db {
         status_code: i32,
         duration_ms: i64,
     ) -> Result<()> {
+        self.log_requests_batch(&[ApiRequestRecord {
+            request_type: req_type.to_string(),
+            org_id: org_id.map(str::to_string),
+            user_id: user_id.map(str::to_string),
+            key_id: key_id.map(str::to_string),
+            status_code,
+            duration_ms,
+        }])
+        .await
+    }
+
+    pub async fn log_requests_batch(&self, records: &[ApiRequestRecord]) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<String> = records
+            .iter()
+            .map(|_| memoricai_core::ids::request_id())
+            .collect();
+        let request_types: Vec<&str> = records
+            .iter()
+            .map(|record| record.request_type.as_str())
+            .collect();
+        let org_ids: Vec<Option<&str>> = records
+            .iter()
+            .map(|record| record.org_id.as_deref())
+            .collect();
+        let user_ids: Vec<Option<&str>> = records
+            .iter()
+            .map(|record| record.user_id.as_deref())
+            .collect();
+        let key_ids: Vec<Option<&str>> = records
+            .iter()
+            .map(|record| record.key_id.as_deref())
+            .collect();
+        let status_codes: Vec<i32> = records.iter().map(|record| record.status_code).collect();
+        let durations: Vec<i64> = records.iter().map(|record| record.duration_ms).collect();
         sqlx::query(
-            "INSERT INTO api_requests (id, type, org_id, user_id, key_id, status_code, duration)
-             VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            "INSERT INTO api_requests
+                (id, type, org_id, user_id, key_id, status_code, duration)
+             SELECT * FROM unnest(
+                $1::text[], $2::text[], $3::text[], $4::text[],
+                $5::text[], $6::int4[], $7::int8[])",
         )
-        .bind(memoricai_core::ids::request_id())
-        .bind(req_type)
-        .bind(org_id)
-        .bind(user_id)
-        .bind(key_id)
-        .bind(status_code)
-        .bind(duration_ms)
+        .bind(&ids)
+        .bind(&request_types)
+        .bind(&org_ids)
+        .bind(&user_ids)
+        .bind(&key_ids)
+        .bind(&status_codes)
+        .bind(&durations)
         .execute(&self.pool)
         .await
         .map_err(db_err)?;

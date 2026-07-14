@@ -201,6 +201,15 @@ impl Engine {
         Ok(index)
     }
 
+    async fn ensure_document_spaces(
+        &self,
+        org_id: &str,
+        tags: &[String],
+        owner_id: Option<&str>,
+    ) -> Result<()> {
+        self.db.ensure_spaces(org_id, tags, owner_id).await
+    }
+
     /// Discover tenants and advance durable re-embedding batches fairly.
     /// Jobs are fenced by leases, so multiple server replicas can run this loop.
     async fn embedding_backfill_loop(self) {
@@ -509,9 +518,7 @@ impl Engine {
                 ));
             }
         }
-        for tag in &tags {
-            self.db.ensure_space(org_id, tag, user_id).await?;
-        }
+        self.ensure_document_spaces(org_id, &tags, user_id).await?;
 
         let content_hash = blake3::hash(req.content.as_bytes()).to_hex().to_string();
         let doc_type = req
@@ -682,7 +689,8 @@ impl Engine {
         let embedding_index = self.embedding_index(org_id).await?;
         let now: Timestamp = chrono::Utc::now();
         let mut created = Vec::with_capacity(req.memories.len());
-        for (input, emb) in req.memories.iter().zip(embeddings.iter()) {
+        let mut memory_rows = Vec::with_capacity(req.memories.len());
+        for input in &req.memories {
             let mem = Memory {
                 id: memoricai_core::ids::memory_id(),
                 custom_id: None,
@@ -714,16 +722,17 @@ impl Engine {
                 created_at: now,
                 updated_at: now,
             };
-            self.db
-                .insert_memory(&mem, &embedding_index.id, emb)
-                .await?;
             created.push(CreatedMemory {
-                id: mem.id,
-                memory: mem.memory,
+                id: mem.id.clone(),
+                memory: mem.memory.clone(),
                 is_static: mem.is_static,
                 created_at: now,
             });
+            memory_rows.push(mem);
         }
+        self.db
+            .insert_memories(&memory_rows, &embedding_index.id, &embeddings)
+            .await?;
         Ok(CreateMemoriesResponse {
             document_id: None,
             memories: created,

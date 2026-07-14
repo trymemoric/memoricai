@@ -4,6 +4,7 @@ use crate::routes::{guard_tags, paginate, scoped_tags};
 use crate::{ApiError, ApiResult, AppState, Auth};
 use axum::extract::{Multipart, Path, Query, State};
 use axum::Json;
+use futures::StreamExt;
 use memoricai_core::dto::*;
 use memoricai_core::error::Error;
 use serde::Deserialize;
@@ -58,62 +59,72 @@ pub async fn batch(
             "batch must contain between 1 and 600 documents".into(),
         )));
     }
-    let mut results = Vec::with_capacity(req.documents.len());
-    let mut success = 0;
-    let mut failed = 0;
     let allowed_tags = state.auth.allowed_container_tags(&ctx);
-    for mut doc in req.documents {
-        // Apply batch-level defaults.
-        if doc.container_tag.is_none() && doc.container_tags.is_none() {
-            doc.container_tag = req.container_tag.clone();
-        }
-        if doc.entity_context.is_none() {
-            doc.entity_context = req.entity_context.clone();
-        }
-        if doc.metadata.is_none() {
-            doc.metadata = req.metadata.clone();
-        }
-        if let Err(e) = scope_ingest_request(&state, &ctx, &mut doc) {
-            failed += 1;
-            results.push(BatchIngestItem {
-                id: None,
-                status: "failed".into(),
-                error: Some(e.0.to_string()),
-            });
-            continue;
-        }
-        match state
-            .engine
-            .ingest_scoped(
-                &ctx.org.id,
-                Some(&ctx.user.id),
-                &doc,
-                allowed_tags.as_deref(),
-            )
-            .await
-        {
-            Ok((id, status)) => {
-                success += 1;
-                results.push(BatchIngestItem {
-                    id: Some(id),
-                    status: status.as_str().to_string(),
-                    error: None,
-                });
+    let concurrency = state.engine.config.ingest_concurrency.clamp(1, 16);
+    let batch_container_tag = req.container_tag;
+    let batch_entity_context = req.entity_context;
+    let batch_metadata = req.metadata;
+    let results: Vec<BatchIngestItem> = futures::stream::iter(req.documents)
+        .map(|mut doc| {
+            let state = state.clone();
+            let ctx = ctx.clone();
+            let allowed_tags = allowed_tags.clone();
+            let batch_container_tag = batch_container_tag.clone();
+            let batch_entity_context = batch_entity_context.clone();
+            let batch_metadata = batch_metadata.clone();
+            async move {
+                // Apply batch-level defaults.
+                if doc.container_tag.is_none() && doc.container_tags.is_none() {
+                    doc.container_tag = batch_container_tag;
+                }
+                if doc.entity_context.is_none() {
+                    doc.entity_context = batch_entity_context;
+                }
+                if doc.metadata.is_none() {
+                    doc.metadata = batch_metadata;
+                }
+                if let Err(e) = scope_ingest_request(&state, &ctx, &mut doc) {
+                    return BatchIngestItem {
+                        id: None,
+                        status: "failed".into(),
+                        error: Some(e.0.to_string()),
+                    };
+                }
+                match state
+                    .engine
+                    .ingest_scoped(
+                        &ctx.org.id,
+                        Some(&ctx.user.id),
+                        &doc,
+                        allowed_tags.as_deref(),
+                    )
+                    .await
+                {
+                    Ok((id, status)) => BatchIngestItem {
+                        id: Some(id),
+                        status: status.as_str().to_string(),
+                        error: None,
+                    },
+                    Err(e) => BatchIngestItem {
+                        id: None,
+                        status: "failed".into(),
+                        error: Some(e.to_string()),
+                    },
+                }
             }
-            Err(e) => {
-                failed += 1;
-                results.push(BatchIngestItem {
-                    id: None,
-                    status: "failed".into(),
-                    error: Some(e.to_string()),
-                });
-            }
-        }
-    }
+        })
+        .buffered(concurrency)
+        .collect()
+        .await;
+    let success = results
+        .iter()
+        .filter(|result| result.error.is_none())
+        .count();
+    let failed = results.len() - success;
     Ok(Json(BatchIngestResponse {
         results,
-        success,
-        failed,
+        success: success as _,
+        failed: failed as _,
     }))
 }
 

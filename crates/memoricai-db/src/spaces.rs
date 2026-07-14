@@ -45,6 +45,35 @@ fn slugify(name: &str) -> String {
 }
 
 impl Db {
+    pub async fn ensure_spaces(
+        &self,
+        org_id: &str,
+        container_tags: &[String],
+        owner_id: Option<&str>,
+    ) -> Result<()> {
+        if container_tags.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<String> = container_tags
+            .iter()
+            .map(|_| memoricai_core::ids::project_id())
+            .collect();
+        sqlx::query(
+            "INSERT INTO spaces (id, name, org_id, owner_id, container_tag)
+             SELECT input.id, input.tag, $2, $3, input.tag
+             FROM unnest($1::text[], $4::text[]) AS input(id, tag)
+             ON CONFLICT (org_id, container_tag) DO NOTHING",
+        )
+        .bind(&ids)
+        .bind(org_id)
+        .bind(owner_id)
+        .bind(container_tags)
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
     /// Ensure a space exists for `container_tag`, creating it lazily on first write.
     pub async fn ensure_space(
         &self,

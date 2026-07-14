@@ -15,10 +15,24 @@ use memoricai_core::enums::OrgRole;
 use memoricai_core::error::{Error, Result};
 use memoricai_core::model::{ApiKeyRecord, AuthContext, Membership, Organization, User};
 use memoricai_db::Db;
+use moka::future::Cache;
+use sha2::{Digest, Sha256};
+
+const AUTH_CONTEXT_TTL_SECONDS: u64 = 30;
+
+#[derive(Clone)]
+struct CachedAuth {
+    context: AuthContext,
+    rate_limit_key: String,
+    rate_limit_max: i32,
+    rate_limit_window_ms: i64,
+    expires_at: Option<chrono::DateTime<Utc>>,
+}
 
 pub struct AuthService {
     db: Db,
     limiter: Mutex<HashMap<String, (i64, u32)>>, // key_id -> (window_start_ms, count)
+    contexts: Cache<[u8; 32], CachedAuth>,
 }
 
 impl AuthService {
@@ -26,6 +40,10 @@ impl AuthService {
         Self {
             db,
             limiter: Mutex::new(HashMap::new()),
+            contexts: Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(std::time::Duration::from_secs(AUTH_CONTEXT_TTL_SECONDS))
+                .build(),
         }
     }
 
@@ -219,6 +237,22 @@ impl AuthService {
         if !token.starts_with("mc_") {
             return Err(Error::Unauthorized("expected mc_ bearer token".into()));
         }
+        let cache_key = bearer_cache_key(token);
+        if let Some(cached) = self.contexts.get(&cache_key).await {
+            if cached
+                .expires_at
+                .is_none_or(|expires_at| expires_at > Utc::now())
+            {
+                self.enforce_rate_limit_keyed(
+                    &cached.rate_limit_key,
+                    cached.rate_limit_max,
+                    cached.rate_limit_window_ms,
+                )?;
+                return Ok(cached.context);
+            }
+            self.contexts.invalidate(&cache_key).await;
+        }
+
         let prefix =
             key_prefix(token).ok_or_else(|| Error::Unauthorized("malformed key".into()))?;
         let token_last4 = last4(token);
@@ -239,8 +273,16 @@ impl AuthService {
                 .await
                 .unwrap_or(false);
             if verified {
+                let cached = CachedAuth {
+                    context: self.build_context(rec.clone()).await?,
+                    rate_limit_key: rec.id.clone(),
+                    rate_limit_max: rec.rate_limit_max,
+                    rate_limit_window_ms: rec.rate_limit_window_ms,
+                    expires_at: rec.expires_at,
+                };
                 self.enforce_rate_limit(&rec)?;
-                return self.build_context(rec).await;
+                self.contexts.insert(cache_key, cached.clone()).await;
+                return Ok(cached.context);
             }
         }
         Err(Error::Unauthorized("invalid api key".into()))
@@ -260,6 +302,21 @@ impl AuthService {
 
     /// Validate an OAuth2 access token and resolve identity + scope.
     pub async fn introspect_oauth(&self, token: &str) -> Result<AuthContext> {
+        let cache_key = bearer_cache_key(token);
+        if let Some(cached) = self.contexts.get(&cache_key).await {
+            if cached
+                .expires_at
+                .is_none_or(|expires_at| expires_at > Utc::now())
+            {
+                self.enforce_rate_limit_keyed(
+                    &cached.rate_limit_key,
+                    cached.rate_limit_max,
+                    cached.rate_limit_window_ms,
+                )?;
+                return Ok(cached.context);
+            }
+            self.contexts.invalidate(&cache_key).await;
+        }
         let t = self
             .db
             .get_oauth_token(token)
@@ -292,7 +349,7 @@ impl AuthService {
             (membership.access_type == "restricted").then(|| membership.container_tags.clone());
         let token_restriction = (!t.container_tags.is_empty()).then_some(t.container_tags);
         let restricted = intersect_restrictions(token_restriction, member_restriction);
-        Ok(AuthContext {
+        let context = AuthContext {
             user,
             org,
             key_id: format!("oauth:{}", t.client_id),
@@ -302,7 +359,27 @@ impl AuthService {
             allowed_endpoints: None,
             scoped_container_tag,
             restricted_container_tags: restricted,
-        })
+        };
+        let cached = CachedAuth {
+            context: context.clone(),
+            rate_limit_key: format!("oauth:{}", t.client_id),
+            rate_limit_max: OAUTH_RATE_LIMIT_MAX,
+            rate_limit_window_ms: OAUTH_RATE_LIMIT_WINDOW_MS,
+            expires_at: Some(t.access_expires_at),
+        };
+        self.contexts.insert(cache_key, cached).await;
+        Ok(context)
+    }
+
+    /// Revoke a bounded key and immediately invalidate cached authorization
+    /// contexts. Revocation is rare, so clearing the small cache is safer than
+    /// maintaining a second token-to-key reverse index.
+    pub async fn revoke_key(&self, org_id: &str, id: &str) -> Result<bool> {
+        let revoked = self.db.revoke_key(org_id, id).await?;
+        if revoked {
+            self.contexts.invalidate_all();
+        }
+        Ok(revoked)
     }
 
     async fn build_context(&self, rec: ApiKeyRecord) -> Result<AuthContext> {
@@ -550,6 +627,10 @@ impl AuthService {
         }
         Ok(())
     }
+}
+
+fn bearer_cache_key(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
 }
 
 /// Default fixed-window rate limit applied to OAuth2 access tokens (keyed per client),

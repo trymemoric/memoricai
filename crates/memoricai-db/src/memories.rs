@@ -24,6 +24,12 @@ pub struct ExtractedMemoryDraft {
     pub bucket_key: Option<String>,
 }
 
+#[derive(Debug, Default)]
+pub struct MemoryRelations {
+    pub parents: Vec<(Memory, MemoryRelation)>,
+    pub children: Vec<(Memory, MemoryRelation)>,
+}
+
 const UPDATE_THRESHOLD: f32 = 0.97;
 const EXTEND_THRESHOLD: f32 = 0.85;
 
@@ -91,6 +97,7 @@ pub(crate) async fn insert_extracted_memories(
     document_id: &str,
     org_id: &str,
     embedding_index_id: &str,
+    embedding_dimension: usize,
     drafts: &[ExtractedMemoryDraft],
 ) -> Result<()> {
     let mut tags: Vec<&str> = drafts
@@ -108,35 +115,128 @@ pub(crate) async fn insert_extracted_memories(
             .map_err(db_err)?;
     }
 
+    struct PendingMemory {
+        id: String,
+        user_id: Option<String>,
+        container_tag: String,
+        content: String,
+        embedding: Vec<f32>,
+        version: i32,
+        is_latest: bool,
+        parent_memory_id: Option<String>,
+        root_memory_id: Option<String>,
+        relation: Option<MemoryRelation>,
+        is_static: bool,
+        forget_after: Option<chrono::DateTime<chrono::Utc>>,
+        event_date: Option<chrono::DateTime<chrono::Utc>>,
+        bucket_key: Option<String>,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
+        let (dot, left_norm, right_norm) = left.iter().zip(right).fold(
+            (0.0_f64, 0.0_f64, 0.0_f64),
+            |(dot, left_norm, right_norm), (left, right)| {
+                let left = f64::from(*left);
+                let right = f64::from(*right);
+                (
+                    dot + left * right,
+                    left_norm + left * left,
+                    right_norm + right * right,
+                )
+            },
+        );
+        (dot / (left_norm.sqrt() * right_norm.sqrt())) as f32
+    }
+
+    let mut pending: Vec<PendingMemory> = Vec::with_capacity(drafts.len());
+    let mut edges: Vec<(String, String, MemoryRelation)> = Vec::new();
     for draft in drafts {
         let new_id = memoricai_core::ids::memory_id();
-        let neighbor = sqlx::query(
-            r#"SELECT m.*, 1 - (me.embedding <=> $1::vector) AS similarity
+        let (stored_vector, query_vector) =
+            crate::embeddings::vector_search_operands("me.embedding", embedding_dimension)?;
+        let index_id = crate::embeddings::sql_text_literal(embedding_index_id);
+        let neighbor_sql = format!(
+            r#"SELECT m.*, 1 - ({stored_vector} <=> {query_vector}) AS similarity
                FROM memories m
-               JOIN memory_embeddings me ON me.memory_id=m.id AND me.index_id=$5
+               JOIN memory_embeddings me ON me.memory_id=m.id AND me.index_id={index_id}
                WHERE m.org_id = $2 AND m.space_container_tag = $3
                  AND m.is_latest AND NOT m.is_forgotten
                  AND (m.document_id IS NULL OR m.document_id = $4 OR EXISTS (
                        SELECT 1 FROM documents d
                        WHERE d.id = m.document_id AND d.status = 'done'))
-               ORDER BY me.embedding <=> $1::vector
+               ORDER BY {stored_vector} <=> {query_vector}
                LIMIT 1
                FOR UPDATE OF m"#,
-        )
-        .bind(pgvec(&draft.embedding))
-        .bind(org_id)
-        .bind(&draft.container_tag)
-        .bind(document_id)
-        .bind(embedding_index_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(db_err)?;
+        );
+        let neighbor = sqlx::query(&neighbor_sql)
+            .bind(pgvec(&draft.embedding))
+            .bind(org_id)
+            .bind(&draft.container_tag)
+            .bind(document_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db_err)?;
 
-        let top = neighbor
+        let database_top = neighbor
             .as_ref()
             .map(|row| (map_memory(row), row.get::<f64, _>("similarity") as f32));
-        let (version, parent, root, relation, supersede, extends) = match top.as_ref() {
-            Some((memory, similarity)) if *similarity >= UPDATE_THRESHOLD => {
+        let local_top = pending
+            .iter()
+            .enumerate()
+            .filter(|(_, memory)| memory.is_latest && memory.container_tag == draft.container_tag)
+            .map(|(position, memory)| {
+                (
+                    position,
+                    cosine_similarity(&draft.embedding, &memory.embedding),
+                )
+            })
+            .max_by(|left, right| {
+                left.1
+                    .partial_cmp(&right.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        let database_similarity = database_top
+            .as_ref()
+            .map(|(_, similarity)| *similarity)
+            .unwrap_or(f32::NEG_INFINITY);
+        let use_local = local_top
+            .as_ref()
+            .is_some_and(|(_, similarity)| *similarity > database_similarity);
+        let top_similarity = local_top
+            .filter(|_| use_local)
+            .map(|(_, similarity)| similarity)
+            .unwrap_or(database_similarity);
+
+        let now = chrono::Utc::now();
+        let (version, parent, root, relation, source_id, supersede_database) = if top_similarity
+            >= UPDATE_THRESHOLD
+        {
+            if use_local {
+                let position = local_top
+                    .map(|(position, _)| position)
+                    .ok_or_else(|| Error::Internal("local memory candidate vanished".into()))?;
+                let previous = &mut pending[position];
+                previous.is_latest = false;
+                previous.updated_at = now;
+                let root = previous
+                    .root_memory_id
+                    .clone()
+                    .unwrap_or_else(|| previous.id.clone());
+                (
+                    previous.version + 1,
+                    Some(previous.id.clone()),
+                    Some(root),
+                    Some(MemoryRelation::Updates),
+                    Some(previous.id.clone()),
+                    None,
+                )
+            } else {
+                let memory = &database_top
+                    .as_ref()
+                    .ok_or_else(|| Error::Internal("database memory candidate vanished".into()))?
+                    .0;
                 let root = memory
                     .root_memory_id
                     .clone()
@@ -147,21 +247,31 @@ pub(crate) async fn insert_extracted_memories(
                     Some(root),
                     Some(MemoryRelation::Updates),
                     Some(memory.id.clone()),
-                    None,
+                    Some(memory.id.clone()),
                 )
             }
-            Some((memory, similarity)) if *similarity >= EXTEND_THRESHOLD => (
+        } else if top_similarity >= EXTEND_THRESHOLD {
+            let source_id = if use_local {
+                let position = local_top
+                    .map(|(position, _)| position)
+                    .ok_or_else(|| Error::Internal("local memory candidate vanished".into()))?;
+                Some(pending[position].id.clone())
+            } else {
+                database_top.as_ref().map(|(memory, _)| memory.id.clone())
+            };
+            (
                 1,
                 None,
                 None,
                 Some(MemoryRelation::Extends),
+                source_id,
                 None,
-                Some(memory.id.clone()),
-            ),
-            _ => (1, None, None, None, None, None),
+            )
+        } else {
+            (1, None, None, None, None, None)
         };
 
-        if let Some(previous_id) = supersede.as_deref() {
+        if let Some(previous_id) = supersede_database.as_deref() {
             let updated = sqlx::query(
                 "UPDATE memories SET is_latest=false, updated_at=now()
                  WHERE id=$1 AND is_latest",
@@ -174,66 +284,229 @@ pub(crate) async fn insert_extracted_memories(
                 return Err(Error::Conflict("memory was updated concurrently".into()));
             }
         }
-
-        let now = chrono::Utc::now();
-        sqlx::query(
-            r#"INSERT INTO memories
-               (id, document_id, org_id, user_id, memory, space_container_tag,
-                version, is_latest, parent_memory_id, root_memory_id, relation, source_count,
-                is_static, is_inference, is_forgotten, forget_after, event_date, metadata,
-                bucket_key, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8,$9,$10,1,$11,false,false,
-                       $12,$13,'{}'::jsonb,$14,$15,$15)"#,
-        )
-        .bind(&new_id)
-        .bind(document_id)
-        .bind(org_id)
-        .bind(&draft.user_id)
-        .bind(&draft.content)
-        .bind(&draft.container_tag)
-        .bind(version)
-        .bind(&parent)
-        .bind(&root)
-        .bind(relation.map(|value| value.as_str()))
-        .bind(draft.is_static)
-        .bind(draft.forget_after)
-        .bind(draft.event_date)
-        .bind(&draft.bucket_key)
-        .bind(now)
-        .execute(&mut **tx)
-        .await
-        .map_err(db_err)?;
-        sqlx::query(
-            "INSERT INTO memory_embeddings (index_id, memory_id, embedding)
-             VALUES ($1,$2,$3::vector)",
-        )
-        .bind(embedding_index_id)
-        .bind(&new_id)
-        .bind(pgvec(&draft.embedding))
-        .execute(&mut **tx)
-        .await
-        .map_err(db_err)?;
-
-        if let Some(source_id) = supersede.or(extends) {
+        if let Some(source_id) = source_id {
             let edge_relation = relation.ok_or_else(|| {
                 Error::Internal("memory graph edge is missing its relation".into())
             })?;
-            sqlx::query(
-                "INSERT INTO memory_relations (source_memory_id, target_memory_id, relation)
-                 VALUES ($1,$2,$3)",
-            )
-            .bind(source_id)
-            .bind(&new_id)
-            .bind(edge_relation.as_str())
-            .execute(&mut **tx)
-            .await
-            .map_err(db_err)?;
+            edges.push((source_id, new_id.clone(), edge_relation));
         }
+        pending.push(PendingMemory {
+            id: new_id,
+            user_id: draft.user_id.clone(),
+            container_tag: draft.container_tag.clone(),
+            content: draft.content.clone(),
+            embedding: draft.embedding.clone(),
+            version,
+            is_latest: true,
+            parent_memory_id: parent,
+            root_memory_id: root,
+            relation,
+            is_static: draft.is_static,
+            forget_after: draft.forget_after,
+            event_date: draft.event_date,
+            bucket_key: draft.bucket_key.clone(),
+            created_at: now,
+            updated_at: now,
+        });
+    }
+
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let records: Vec<serde_json::Value> = pending
+        .iter()
+        .map(|memory| {
+            serde_json::json!({
+                "id": memory.id,
+                "user_id": memory.user_id,
+                "memory": memory.content,
+                "space_container_tag": memory.container_tag,
+                "version": memory.version,
+                "is_latest": memory.is_latest,
+                "parent_memory_id": memory.parent_memory_id,
+                "root_memory_id": memory.root_memory_id,
+                "relation": memory.relation.map(|relation| relation.as_str()),
+                "is_static": memory.is_static,
+                "forget_after": memory.forget_after,
+                "event_date": memory.event_date,
+                "bucket_key": memory.bucket_key,
+                "created_at": memory.created_at,
+                "updated_at": memory.updated_at,
+            })
+        })
+        .collect();
+    sqlx::query(
+        r#"INSERT INTO memories
+           (id, document_id, org_id, user_id, memory, space_container_tag,
+            version, is_latest, parent_memory_id, root_memory_id, relation, source_count,
+            is_static, is_inference, is_forgotten, forget_after, event_date, metadata,
+            bucket_key, created_at, updated_at)
+           SELECT input.id, $2, $3, input.user_id, input.memory,
+                  input.space_container_tag, input.version, input.is_latest,
+                  input.parent_memory_id, input.root_memory_id, input.relation, 1,
+                  input.is_static, false, false, input.forget_after, input.event_date,
+                  '{}'::jsonb, input.bucket_key, input.created_at, input.updated_at
+           FROM jsonb_to_recordset($1::jsonb) AS input(
+                id text, user_id text, memory text, space_container_tag text,
+                version int4, is_latest boolean, parent_memory_id text,
+                root_memory_id text, relation text, is_static boolean,
+                forget_after timestamptz, event_date timestamptz, bucket_key text,
+                created_at timestamptz, updated_at timestamptz)"#,
+    )
+    .bind(serde_json::Value::Array(records))
+    .bind(document_id)
+    .bind(org_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(db_err)?;
+
+    let memory_ids: Vec<&str> = pending.iter().map(|memory| memory.id.as_str()).collect();
+    let vectors: Vec<String> = pending
+        .iter()
+        .map(|memory| pgvec(&memory.embedding))
+        .collect();
+    sqlx::query(
+        "INSERT INTO memory_embeddings (index_id, memory_id, embedding)
+         SELECT $1, input.id, input.embedding::vector
+         FROM unnest($2::text[], $3::text[]) AS input(id, embedding)",
+    )
+    .bind(embedding_index_id)
+    .bind(&memory_ids)
+    .bind(&vectors)
+    .execute(&mut **tx)
+    .await
+    .map_err(db_err)?;
+
+    if !edges.is_empty() {
+        let sources: Vec<&str> = edges.iter().map(|(source, _, _)| source.as_str()).collect();
+        let targets: Vec<&str> = edges.iter().map(|(_, target, _)| target.as_str()).collect();
+        let relations: Vec<&str> = edges
+            .iter()
+            .map(|(_, _, relation)| relation.as_str())
+            .collect();
+        sqlx::query(
+            "INSERT INTO memory_relations (source_memory_id, target_memory_id, relation)
+             SELECT * FROM unnest($1::text[], $2::text[], $3::text[])",
+        )
+        .bind(&sources)
+        .bind(&targets)
+        .bind(&relations)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
     }
     Ok(())
 }
 
 impl Db {
+    pub async fn insert_memories(
+        &self,
+        memories: &[Memory],
+        embedding_index_id: &str,
+        embeddings: &[Vec<f32>],
+    ) -> Result<()> {
+        if memories.len() != embeddings.len() {
+            return Err(Error::Internal(
+                "memory and embedding batches are misaligned".into(),
+            ));
+        }
+        if memories.is_empty() {
+            return Ok(());
+        }
+        let org_id = &memories[0].org_id;
+        if memories.iter().any(|memory| &memory.org_id != org_id) {
+            return Err(Error::Internal(
+                "memory batch spans multiple organizations".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let dimension =
+            crate::embeddings::embedding_index_dimension(&mut tx, embedding_index_id, Some(org_id))
+                .await?;
+        for embedding in embeddings {
+            crate::embeddings::validate_stored_embedding(embedding, dimension)?;
+        }
+        let records: Vec<serde_json::Value> = memories
+            .iter()
+            .map(|memory| {
+                serde_json::json!({
+                    "id": memory.id,
+                    "custom_id": memory.custom_id,
+                    "document_id": memory.document_id,
+                    "org_id": memory.org_id,
+                    "user_id": memory.user_id,
+                    "memory": memory.memory,
+                    "summary": memory.summary,
+                    "mem_type": memory.mem_type,
+                    "space_container_tag": memory.space_container_tag,
+                    "version": memory.version,
+                    "is_latest": memory.is_latest,
+                    "parent_memory_id": memory.parent_memory_id,
+                    "root_memory_id": memory.root_memory_id,
+                    "relation": memory.relation.map(|relation| relation.as_str()),
+                    "source_count": memory.source_count,
+                    "is_static": memory.is_static,
+                    "is_inference": memory.is_inference,
+                    "review_status": memory.review_status,
+                    "is_forgotten": memory.is_forgotten,
+                    "forget_reason": memory.forget_reason,
+                    "forget_after": memory.forget_after,
+                    "forget_batch_id": memory.forget_batch_id,
+                    "event_date": memory.event_date,
+                    "metadata": memory.metadata,
+                    "created_at": memory.created_at,
+                    "updated_at": memory.updated_at,
+                })
+            })
+            .collect();
+        sqlx::query(
+            r#"INSERT INTO memories
+               (id, custom_id, document_id, org_id, user_id, memory, summary, mem_type,
+                space_container_tag, version, is_latest, parent_memory_id, root_memory_id,
+                relation, source_count, is_static, is_inference, review_status, is_forgotten,
+                forget_reason, forget_after, forget_batch_id, event_date, metadata,
+                created_at, updated_at)
+               SELECT input.id, input.custom_id, input.document_id, input.org_id, input.user_id,
+                      input.memory, input.summary, input.mem_type, input.space_container_tag,
+                      input.version, input.is_latest, input.parent_memory_id, input.root_memory_id,
+                      input.relation, input.source_count, input.is_static, input.is_inference,
+                      input.review_status, input.is_forgotten, input.forget_reason,
+                      input.forget_after, input.forget_batch_id, input.event_date, input.metadata,
+                      input.created_at, input.updated_at
+               FROM jsonb_to_recordset($1::jsonb) AS input(
+                    id text, custom_id text, document_id text, org_id text, user_id text,
+                    memory text, summary text, mem_type text, space_container_tag text,
+                    version int4, is_latest boolean, parent_memory_id text, root_memory_id text,
+                    relation text, source_count int4, is_static boolean, is_inference boolean,
+                    review_status text, is_forgotten boolean, forget_reason text,
+                    forget_after timestamptz, forget_batch_id text, event_date timestamptz,
+                    metadata jsonb, created_at timestamptz, updated_at timestamptz)"#,
+        )
+        .bind(serde_json::Value::Array(records))
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        let ids: Vec<&str> = memories.iter().map(|memory| memory.id.as_str()).collect();
+        let vectors: Vec<String> = embeddings
+            .iter()
+            .map(|embedding| pgvec(embedding))
+            .collect();
+        sqlx::query(
+            "INSERT INTO memory_embeddings (index_id, memory_id, embedding)
+             SELECT $1, input.id, input.embedding::vector
+             FROM unnest($2::text[], $3::text[]) AS input(id, embedding)",
+        )
+        .bind(embedding_index_id)
+        .bind(&ids)
+        .bind(&vectors)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
+        Ok(())
+    }
+
     pub async fn insert_memory(
         &self,
         mem: &Memory,
@@ -415,39 +688,43 @@ impl Db {
         &self,
         org_id: &str,
         embedding_index_id: &str,
+        embedding_dimension: usize,
         tag: Option<&str>,
         qvec: &[f32],
         k: i64,
         threshold: f32,
         include_forgotten: bool,
     ) -> Result<Vec<MemoryHit>> {
-        let rows = sqlx::query(
-            r#"SELECT m.*, 1 - (me.embedding <=> $1::vector) AS similarity
+        let (stored_vector, query_vector) =
+            crate::embeddings::vector_search_operands("me.embedding", embedding_dimension)?;
+        let index_id = crate::embeddings::sql_text_literal(embedding_index_id);
+        let sql = format!(
+            r#"SELECT m.*, 1 - ({stored_vector} <=> {query_vector}) AS similarity
                FROM memories m
-               JOIN memory_embeddings me ON me.memory_id=m.id AND me.index_id=$3
+               JOIN memory_embeddings me ON me.memory_id=m.id AND me.index_id={index_id}
                WHERE m.org_id = $2
-                 AND ($4::text IS NULL OR m.space_container_tag = $4)
+                 AND ($3::text IS NULL OR m.space_container_tag = $3)
                  AND m.is_latest
                  -- Only surface memories whose source document is fully indexed, so a
                  -- partially-rebuilt (failed / in-progress) reindex is never searchable.
                  AND (m.document_id IS NULL
                       OR EXISTS (SELECT 1 FROM documents d
                                  WHERE d.id = m.document_id AND d.status = 'done'))
-                 AND ($7 OR NOT m.is_forgotten)
-                 AND 1 - (me.embedding <=> $1::vector) >= $5
-               ORDER BY me.embedding <=> $1::vector
-               LIMIT $6"#,
-        )
-        .bind(pgvec(qvec))
-        .bind(org_id)
-        .bind(embedding_index_id)
-        .bind(tag)
-        .bind(threshold as f64)
-        .bind(k)
-        .bind(include_forgotten)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
+                 AND ($6 OR NOT m.is_forgotten)
+                 AND 1 - ({stored_vector} <=> {query_vector}) >= $4
+               ORDER BY {stored_vector} <=> {query_vector}
+               LIMIT $5"#,
+        );
+        let rows = sqlx::query(&sql)
+            .bind(pgvec(qvec))
+            .bind(org_id)
+            .bind(tag)
+            .bind(threshold as f64)
+            .bind(k)
+            .bind(include_forgotten)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
         Ok(rows
             .iter()
             .map(|row| MemoryHit {
@@ -458,37 +735,42 @@ impl Db {
     }
 
     /// Nearest neighbors for relation inference (no threshold, excludes `exclude_id`).
+    #[allow(clippy::too_many_arguments)]
     pub async fn neighbor_memories(
         &self,
         org_id: &str,
         embedding_index_id: &str,
+        embedding_dimension: usize,
         tag: &str,
         qvec: &[f32],
         k: i64,
         exclude_id: &str,
     ) -> Result<Vec<MemoryHit>> {
-        let rows = sqlx::query(
-            r#"SELECT m.*, 1 - (me.embedding <=> $1::vector) AS similarity
+        let (stored_vector, query_vector) =
+            crate::embeddings::vector_search_operands("me.embedding", embedding_dimension)?;
+        let index_id = crate::embeddings::sql_text_literal(embedding_index_id);
+        let sql = format!(
+            r#"SELECT m.*, 1 - ({stored_vector} <=> {query_vector}) AS similarity
              FROM memories m
-             JOIN memory_embeddings me ON me.memory_id=m.id AND me.index_id=$3
-             WHERE m.org_id = $2 AND m.space_container_tag = $4
+             JOIN memory_embeddings me ON me.memory_id=m.id AND me.index_id={index_id}
+             WHERE m.org_id = $2 AND m.space_container_tag = $3
                  AND m.is_latest AND NOT m.is_forgotten
-                 AND m.id <> $5
+                 AND m.id <> $4
                  AND (m.document_id IS NULL OR EXISTS (
                       SELECT 1 FROM documents d
                       WHERE d.id = m.document_id AND d.status = 'done'))
-               ORDER BY me.embedding <=> $1::vector
-               LIMIT $6"#,
-        )
-        .bind(pgvec(qvec))
-        .bind(org_id)
-        .bind(embedding_index_id)
-        .bind(tag)
-        .bind(exclude_id)
-        .bind(k)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
+               ORDER BY {stored_vector} <=> {query_vector}
+               LIMIT $5"#,
+        );
+        let rows = sqlx::query(&sql)
+            .bind(pgvec(qvec))
+            .bind(org_id)
+            .bind(tag)
+            .bind(exclude_id)
+            .bind(k)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
         Ok(rows
             .iter()
             .map(|row| MemoryHit {
@@ -600,6 +882,55 @@ impl Db {
                 (map_memory(row), rel)
             })
             .collect())
+    }
+
+    /// Fetch both directions of the relation graph for a page of memories in
+    /// one round trip, capped to the same eight entries per direction as the
+    /// single-memory methods.
+    pub async fn memory_relations_for_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<HashMap<String, MemoryRelations>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query(
+            "WITH edges AS (
+               SELECT target_memory_id AS requested_id, source_memory_id AS related_id,
+                      relation, 'parent'::text AS direction
+               FROM memory_relations WHERE target_memory_id=ANY($1)
+               UNION ALL
+               SELECT source_memory_id AS requested_id, target_memory_id AS related_id,
+                      relation, 'child'::text AS direction
+               FROM memory_relations WHERE source_memory_id=ANY($1)
+             ), ranked AS (
+               SELECT *, row_number() OVER (
+                   PARTITION BY requested_id, direction ORDER BY related_id) AS position
+               FROM edges
+             )
+             SELECT ranked.requested_id, ranked.direction,
+                    ranked.relation AS edge_relation, m.*
+             FROM ranked JOIN memories m ON m.id=ranked.related_id
+             WHERE ranked.position <= 8
+             ORDER BY ranked.requested_id, ranked.direction, ranked.position",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        let mut relations: HashMap<String, MemoryRelations> = HashMap::new();
+        for row in &rows {
+            let requested_id: String = row.get("requested_id");
+            let relation = MemoryRelation::parse(&row.get::<String, _>("edge_relation"));
+            let entry = relations.entry(requested_id).or_default();
+            let value = (map_memory(row), relation);
+            if row.get::<String, _>("direction") == "parent" {
+                entry.parents.push(value);
+            } else {
+                entry.children.push(value);
+            }
+        }
+        Ok(relations)
     }
 
     pub async fn static_memories(

@@ -2,7 +2,36 @@
 
 use crate::{db_err, pgvec, Db};
 use memoricai_core::error::{Error, Result};
+use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Row, Transaction};
+
+/// pgvector supports HNSW over `vector` through 2,000 dimensions and over the
+/// indexed `halfvec` representation through 4,000 dimensions.
+pub const MAX_HNSW_VECTOR_DIMENSION: usize = 2_000;
+pub const MAX_HNSW_HALF_VECTOR_DIMENSION: usize = 4_000;
+
+pub(crate) fn vector_search_operands(column: &str, dimension: usize) -> Result<(String, String)> {
+    if dimension == 0 {
+        return Err(Error::Model("embedding dimension must be positive".into()));
+    }
+    if dimension <= MAX_HNSW_VECTOR_DIMENSION {
+        Ok((
+            format!("{column}::vector({dimension})"),
+            format!("$1::vector({dimension})"),
+        ))
+    } else if dimension <= MAX_HNSW_HALF_VECTOR_DIMENSION {
+        Ok((
+            format!("{column}::halfvec({dimension})"),
+            format!("$1::halfvec({dimension})"),
+        ))
+    } else {
+        Ok((column.to_string(), "$1::vector".to_string()))
+    }
+}
+
+pub(crate) fn sql_text_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddingIndex {
@@ -111,6 +140,97 @@ async fn queue_missing_backfill(
 }
 
 impl Db {
+    /// Build dimension-aware partial HNSW indexes for every registered vector
+    /// space. Each partial index contains a single dimension, which is required
+    /// when the underlying column uses unconstrained `vector` for model agility.
+    pub async fn ensure_all_ann_indexes(&self) -> Result<()> {
+        let rows = sqlx::query(
+            "SELECT id, org_id, embedding_model_id, model_version, provider, dimension
+             FROM embedding_indexes ORDER BY created_at, id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        for row in rows {
+            let index = EmbeddingIndex {
+                id: row.get("id"),
+                org_id: row.get("org_id"),
+                embedding_model_id: row.get("embedding_model_id"),
+                model_version: row.get("model_version"),
+                provider: row.get("provider"),
+                dimension: row.get::<i32, _>("dimension") as usize,
+            };
+            self.ensure_ann_indexes(&index).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn ensure_ann_indexes(&self, index: &EmbeddingIndex) -> Result<()> {
+        if index.dimension > MAX_HNSW_HALF_VECTOR_DIMENSION {
+            tracing::warn!(
+                embedding_index = %index.id,
+                dimension = index.dimension,
+                max_dimension = MAX_HNSW_HALF_VECTOR_DIMENSION,
+                "embedding dimension exceeds pgvector HNSW limits; using exact search"
+            );
+            return Ok(());
+        }
+        if index.dimension == 0 {
+            return Err(Error::Model("embedding dimension must be positive".into()));
+        }
+
+        for (table, id_column, prefix) in [
+            ("memory_embeddings", "memory_id", "memory_ann"),
+            ("chunk_embeddings", "chunk_id", "chunk_ann"),
+        ] {
+            let mut hasher = Sha256::new();
+            hasher.update(table.as_bytes());
+            hasher.update([0]);
+            hasher.update(index.id.as_bytes());
+            let digest = format!("{:x}", hasher.finalize());
+            let name = format!("{prefix}_{}", &digest[..20]);
+            let index_literal = index.id.replace('\'', "''");
+            let (vector_type, operator_class) = if index.dimension <= MAX_HNSW_VECTOR_DIMENSION {
+                ("vector", "vector_cosine_ops")
+            } else {
+                ("halfvec", "halfvec_cosine_ops")
+            };
+            let ddl = format!(
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} \
+                 ON {table} USING hnsw \
+                 ((embedding::{vector_type}({dimension})) {operator_class}) \
+                 WHERE index_id = '{index_literal}'",
+                dimension = index.dimension,
+            );
+
+            // Session-level advisory locking prevents two starting replicas from
+            // concurrently trying to create the same physical index.
+            let mut connection = self.pool.acquire().await.map_err(db_err)?;
+            sqlx::query("SELECT pg_advisory_lock(hashtext($1))")
+                .bind(&name)
+                .execute(&mut *connection)
+                .await
+                .map_err(db_err)?;
+            let create_result = sqlx::query(&ddl).execute(&mut *connection).await;
+            let unlock_result = sqlx::query("SELECT pg_advisory_unlock(hashtext($1))")
+                .bind(&name)
+                .execute(&mut *connection)
+                .await;
+            create_result.map_err(db_err)?;
+            unlock_result.map_err(db_err)?;
+
+            tracing::debug!(
+                embedding_index = %index.id,
+                dimension = index.dimension,
+                table,
+                id_column,
+                ann_index = %name,
+                "ensured vector ANN index"
+            );
+        }
+        Ok(())
+    }
+
     /// Resolve the index belonging to one exact model vector space. If retained
     /// source text lacks vectors for this index, a durable backfill is queued.
     pub async fn ensure_embedding_index(
@@ -177,6 +297,9 @@ impl Db {
             queue_missing_backfill(&mut tx, org_id, &index.id).await?;
         }
         tx.commit().await.map_err(db_err)?;
+        // A newly-created vector space is empty, so this is fast. Existing
+        // installations use concurrent creation and keep serving writes.
+        self.ensure_ann_indexes(&index).await?;
         Ok(index)
     }
 
@@ -456,5 +579,34 @@ impl Db {
         .await
         .map_err(db_err)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sql_text_literal, vector_search_operands};
+
+    #[test]
+    fn vector_search_uses_the_dimension_appropriate_ann_type() {
+        assert_eq!(
+            vector_search_operands("embedding", 1536).unwrap(),
+            ("embedding::vector(1536)".into(), "$1::vector(1536)".into())
+        );
+        assert_eq!(
+            vector_search_operands("embedding", 3072).unwrap(),
+            (
+                "embedding::halfvec(3072)".into(),
+                "$1::halfvec(3072)".into()
+            )
+        );
+        assert_eq!(
+            vector_search_operands("embedding", 4096).unwrap(),
+            ("embedding".into(), "$1::vector".into())
+        );
+    }
+
+    #[test]
+    fn dynamic_index_predicates_escape_text_literals() {
+        assert_eq!(sql_text_literal("index'one"), "'index''one'");
     }
 }

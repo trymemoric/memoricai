@@ -70,6 +70,9 @@ pub struct ImportCtx<'a> {
     pub access_token: Option<String>,
     pub metadata: Value,
     pub cursor: Option<String>,
+    /// Reserved document count for this sync. Keeping it in the import context
+    /// avoids a `count(*)` query for every provider item.
+    pub document_count: std::sync::Arc<tokio::sync::Mutex<i64>>,
     /// External ids enumerated at the source this run, for deletion reconciliation.
     pub seen: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
@@ -99,22 +102,19 @@ impl ImportCtx<'_> {
             }
         });
         let custom_id = format!("{}:{external_id}", self.connection_id);
-        if self
+        let is_new = !self
             .engine
             .db
-            .find_document_by_custom_id(&self.org_id, &custom_id)
-            .await?
-            .is_none()
-            && self
-                .engine
-                .db
-                .count_documents_for_connection(&self.org_id, &self.connection_id)
-                .await?
-                >= i64::from(self.document_limit.max(0))
-        {
-            return Err(Error::BadRequest(
-                "connection document limit reached".into(),
-            ));
+            .document_exists_by_custom_id(&self.org_id, &custom_id)
+            .await?;
+        if is_new {
+            let mut count = self.document_count.lock().await;
+            if *count >= i64::from(self.document_limit.max(0)) {
+                return Err(Error::BadRequest(
+                    "connection document limit reached".into(),
+                ));
+            }
+            *count += 1;
         }
         let req = IngestRequest {
             content,
@@ -127,7 +127,8 @@ impl ImportCtx<'_> {
             title,
             raw: None,
         };
-        self.engine
+        let result = self
+            .engine
             .ingest_from_connection(
                 &self.org_id,
                 self.user_id.as_deref(),
@@ -135,8 +136,12 @@ impl ImportCtx<'_> {
                 &self.connection_id,
                 "connection",
             )
-            .await?;
-        Ok(())
+            .await;
+        if result.is_err() && is_new {
+            let mut count = self.document_count.lock().await;
+            *count = count.saturating_sub(1);
+        }
+        result.map(|_| ())
     }
 
     /// Ingest one fetched *binary* item: extract text via the media/binary extractor
@@ -409,6 +414,11 @@ impl Connectors {
         }
 
         let connector = connector_for(&conn.provider)?;
+        let document_count = self
+            .engine
+            .db
+            .count_documents_for_connection(org_id, connection_id)
+            .await?;
         let ctx = ImportCtx {
             engine: &self.engine,
             org_id: org_id.to_string(),
@@ -419,6 +429,7 @@ impl Connectors {
             access_token: creds.as_ref().and_then(|c| c.access_token.clone()),
             metadata: conn.metadata.clone(),
             cursor: creds.as_ref().and_then(|c| c.sync_cursor.clone()),
+            document_count: std::sync::Arc::new(tokio::sync::Mutex::new(document_count)),
             seen: Default::default(),
         };
 
@@ -502,38 +513,49 @@ impl Connectors {
             return Ok(());
         };
         let due = self.engine.db.connections_due(0).await?;
-        for c in due.into_iter().filter(|c| c.provider == provider) {
-            if !scope.is_empty() {
-                // Only sync connections configured to watch this webhook's resource (e.g.
-                // the specific GitHub repo), not every connection of the provider/org.
-                let watches = self
-                    .engine
-                    .db
-                    .get_connection_credentials(&c.id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|cr| cr.sync_cursor)
-                    .and_then(|cur| serde_json::from_str::<Vec<String>>(&cur).ok())
-                    .is_some_and(|repos| repos.contains(&scope));
-                if !watches {
-                    continue;
+        futures::stream::iter(due.into_iter().filter(|c| c.provider == provider))
+            .map(|connection| {
+                let scope = scope.clone();
+                async move {
+                    if !scope.is_empty() {
+                        // Only sync connections configured to watch this webhook's resource.
+                        let watches = self
+                            .engine
+                            .db
+                            .get_connection_credentials(&connection.id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|credentials| credentials.sync_cursor)
+                            .and_then(|cursor| serde_json::from_str::<Vec<String>>(&cursor).ok())
+                            .is_some_and(|resources| resources.contains(&scope));
+                        if !watches {
+                            return;
+                        }
+                    }
+                    let _ = self
+                        .import(&connection.org_id, &connection.id, "event")
+                        .await;
                 }
-            }
-            let _ = self.import(&c.org_id, &c.id, "event").await;
-        }
+            })
+            .buffer_unordered(4)
+            .collect::<Vec<_>>()
+            .await;
         Ok(())
     }
 
     pub async fn run_due_syncs(&self, hours: i64) -> Result<usize> {
         let due = self.engine.db.connections_due(hours).await?;
-        let mut n = 0;
-        for c in due {
-            if self.import(&c.org_id, &c.id, "cron").await.is_ok() {
-                n += 1;
-            }
-        }
-        Ok(n)
+        let outcomes = futures::stream::iter(due)
+            .map(|connection| async move {
+                self.import(&connection.org_id, &connection.id, "cron")
+                    .await
+                    .is_ok()
+            })
+            .buffer_unordered(4)
+            .collect::<Vec<_>>()
+            .await;
+        Ok(outcomes.into_iter().filter(|success| *success).count())
     }
 
     async fn ctx_for(
@@ -552,6 +574,11 @@ impl Connectors {
             .db
             .get_connection_credentials(connection_id)
             .await?;
+        let document_count = self
+            .engine
+            .db
+            .count_documents_for_connection(org_id, connection_id)
+            .await?;
         let ctx = ImportCtx {
             engine: &self.engine,
             org_id: org_id.to_string(),
@@ -562,6 +589,7 @@ impl Connectors {
             access_token: creds.as_ref().and_then(|c| c.access_token.clone()),
             metadata: conn.metadata.clone(),
             cursor: creds.as_ref().and_then(|c| c.sync_cursor.clone()),
+            document_count: std::sync::Arc::new(tokio::sync::Mutex::new(document_count)),
             seen: Default::default(),
         };
         Ok((conn, ctx))

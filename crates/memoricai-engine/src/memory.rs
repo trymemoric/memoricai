@@ -3,7 +3,6 @@
 //! stages tolerate malformed model output by dropping invalid facts.
 
 use crate::Engine;
-use futures::{StreamExt, TryStreamExt};
 use memoricai_core::dto::{ForgetRequest, PatchMemoryRequest};
 use memoricai_core::enums::MemoryRelation;
 use memoricai_core::error::{Error, Result};
@@ -207,6 +206,7 @@ impl Engine {
             .neighbor_memories(
                 org_id,
                 &embedding_index.id,
+                embedding_index.dimension,
                 container_tag,
                 embedding,
                 3,
@@ -312,18 +312,13 @@ impl Engine {
 
         // Buckets: memories grouped by bucket_key + any per-bucket summaries.
         let mut buckets: std::collections::BTreeMap<String, Vec<String>> = Default::default();
-        let bucket_futs: Vec<_> = bucket_defs
-            .iter()
-            .map(|def| {
-                self.db
-                    .memories_in_bucket(org_id, container_tag, &def.key, 20)
-            })
-            .collect();
-        let bucket_mems = futures::stream::iter(bucket_futs)
-            .buffered(4)
-            .try_collect::<Vec<_>>()
+        let bucket_keys: Vec<String> = bucket_defs.iter().map(|def| def.key.clone()).collect();
+        let mut bucket_mems = self
+            .db
+            .memories_in_buckets(org_id, container_tag, &bucket_keys, 20)
             .await?;
-        for (def, mems) in bucket_defs.iter().zip(bucket_mems) {
+        for def in &bucket_defs {
+            let mems = bucket_mems.remove(&def.key).unwrap_or_default();
             let mut entries: Vec<String> = summaries
                 .iter()
                 .filter(|(b, _)| b.as_deref() == Some(def.key.as_str()))

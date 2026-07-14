@@ -35,7 +35,7 @@ class ClientTests(unittest.TestCase):
 
     def test_version_matches_package(self):
         # Guards against __version__ drifting from the packaged version again.
-        self.assertEqual(__version__, "0.1.4")
+        self.assertEqual(__version__, "0.3.0")
 
 
 if __name__ == "__main__":

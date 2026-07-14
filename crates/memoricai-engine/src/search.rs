@@ -2,13 +2,12 @@
 //! and bulk semantic forget. Supports query rewriting and cross-encoder reranking.
 
 use crate::Engine;
-use futures::StreamExt;
 use memoricai_core::dto::*;
 use memoricai_core::error::{Error, Result};
 use memoricai_core::filter::MetadataFilter;
 use memoricai_core::ports::{ChatMessage, ChatOptions};
 use memoricai_db::MemoryHit;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 impl Engine {
@@ -170,6 +169,7 @@ impl Engine {
             self.db.search_chunks(
                 org_id,
                 &embedding_index.id,
+                embedding_index.dimension,
                 tags,
                 qvec,
                 (req.limit as i64) * 4,
@@ -211,19 +211,20 @@ impl Engine {
             req.limit as usize
         };
         by_doc.truncate(scan_cap);
-        let doc_futs: Vec<_> = by_doc
-            .iter()
-            .map(|(doc_id, _)| self.db.get_document(org_id, doc_id))
+        let doc_ids: Vec<String> = by_doc.iter().map(|(doc_id, _)| doc_id.clone()).collect();
+        let docs = if req.include_full_docs {
+            self.db.documents_by_ids(org_id, &doc_ids).await?
+        } else {
+            self.db.document_summaries_by_ids(org_id, &doc_ids).await?
+        };
+        let mut docs_by_id: HashMap<String, _> = docs
+            .into_iter()
+            .map(|document| (document.id.clone(), document))
             .collect();
-        let docs = futures::stream::iter(doc_futs)
-            .buffered(8)
-            .collect::<Vec<_>>()
-            .await;
         let mut results = Vec::new();
-        for ((_, chunks), doc) in by_doc.into_iter().zip(docs) {
-            let doc = match doc {
-                Ok(d) => d,
-                Err(_) => continue,
+        for (doc_id, chunks) in by_doc {
+            let Some(doc) = docs_by_id.remove(&doc_id) else {
+                continue;
             };
             if let Some(f) = &filter {
                 if !f.matches(&doc.metadata) {
@@ -309,6 +310,7 @@ impl Engine {
         let mode = req.search_mode.as_str();
 
         let mut results: Vec<MemorySearchResult> = Vec::new();
+        let mut result_document_ids: HashMap<String, String> = HashMap::new();
         let mut digest: Option<String> = None;
 
         if mode == "memories" || mode == "hybrid" {
@@ -326,6 +328,7 @@ impl Engine {
                 self.db.search_memories(
                     org_id,
                     &embedding_index.id,
+                    embedding_index.dimension,
                     tag,
                     qvec,
                     fetch,
@@ -374,16 +377,9 @@ impl Engine {
 
             for hit in hits {
                 let m = hit.memory;
-                let context = if req.include.related_memories {
-                    Some(self.memory_context(&m.id).await?)
-                } else {
-                    None
-                };
-                let documents = if req.include.documents {
-                    self.memory_documents(org_id, &m).await
-                } else {
-                    None
-                };
+                if let Some(document_id) = &m.document_id {
+                    result_document_ids.insert(m.id.clone(), document_id.clone());
+                }
                 results.push(MemorySearchResult {
                     id: m.id,
                     memory: Some(m.memory),
@@ -393,8 +389,8 @@ impl Engine {
                     updated_at: m.updated_at,
                     version: m.version,
                     root_memory_id: m.root_memory_id,
-                    context,
-                    documents,
+                    context: None,
+                    documents: None,
                 });
             }
         }
@@ -410,6 +406,7 @@ impl Engine {
                 self.db.search_chunks(
                     org_id,
                     &embedding_index.id,
+                    embedding_index.dimension,
                     tags.as_deref(),
                     qvec,
                     req.limit as i64,
@@ -459,6 +456,48 @@ impl Engine {
             });
         }
         results.truncate(req.limit as usize);
+
+        // Enrich only the final page, and batch both relation directions and all
+        // source documents. Reranking therefore no longer causes enrichment of
+        // candidates that are immediately discarded.
+        let memory_ids: Vec<String> = results
+            .iter()
+            .filter(|result| result.memory.is_some())
+            .map(|result| result.id.clone())
+            .collect();
+        let mut relations = if req.include.related_memories {
+            self.db.memory_relations_for_ids(&memory_ids).await?
+        } else {
+            HashMap::new()
+        };
+        let documents = if req.include.documents {
+            let doc_ids: Vec<String> = memory_ids
+                .iter()
+                .filter_map(|id| result_document_ids.get(id).cloned())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            self.db
+                .documents_by_ids(org_id, &doc_ids)
+                .await?
+                .into_iter()
+                .map(|document| (document.id.clone(), document))
+                .collect::<HashMap<_, _>>()
+        } else {
+            HashMap::new()
+        };
+        for result in &mut results {
+            if req.include.related_memories && result.memory.is_some() {
+                let relation_set = relations.remove(&result.id).unwrap_or_default();
+                result.context = Some(Self::memory_context(relation_set));
+            }
+            if req.include.documents {
+                result.documents = result_document_ids
+                    .get(&result.id)
+                    .and_then(|document_id| documents.get(document_id).cloned())
+                    .map(|document| vec![document]);
+            }
+        }
         let total = results.len();
         Ok(MemorySearchResponse {
             results,
@@ -501,25 +540,16 @@ impl Engine {
 
         // Resolve document dates (metadata `date` string, else creation date).
         let doc_ids: Vec<String> = group_order.iter().flatten().cloned().collect();
-        let doc_futs: Vec<_> = doc_ids
-            .iter()
-            .map(|id| self.db.get_document(org_id, id))
-            .collect();
-        let docs = futures::stream::iter(doc_futs)
-            .buffered(8)
-            .collect::<Vec<_>>()
-            .await;
+        let docs = self.db.document_summaries_by_ids(org_id, &doc_ids).await?;
         let mut doc_dates: HashMap<String, String> = HashMap::new();
-        for (id, doc) in doc_ids.iter().zip(docs) {
-            if let Ok(doc) = doc {
-                let date = doc
-                    .metadata
-                    .get("date")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| doc.created_at.format("%Y-%m-%d").to_string());
-                doc_dates.insert(id.clone(), date);
-            }
+        for doc in docs {
+            let date = doc
+                .metadata
+                .get("date")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| doc.created_at.format("%Y-%m-%d").to_string());
+            doc_dates.insert(doc.id, date);
         }
 
         let group_date = |key: &Option<String>| -> Option<String> {
@@ -572,11 +602,10 @@ impl Engine {
         Ok(Some(out))
     }
 
-    async fn memory_context(&self, memory_id: &str) -> Result<MemoryContext> {
-        let parents = self.db.memory_parents(memory_id).await?;
-        let children = self.db.memory_children(memory_id).await?;
-        Ok(MemoryContext {
-            parents: parents
+    fn memory_context(relations: memoricai_db::memories::MemoryRelations) -> MemoryContext {
+        MemoryContext {
+            parents: relations
+                .parents
                 .into_iter()
                 .map(|(m, rel)| ContextEntry {
                     memory: m.memory,
@@ -585,7 +614,8 @@ impl Engine {
                     updated_at: m.updated_at,
                 })
                 .collect(),
-            children: children
+            children: relations
+                .children
                 .into_iter()
                 .map(|(m, rel)| ContextEntry {
                     memory: m.memory,
@@ -594,20 +624,7 @@ impl Engine {
                     updated_at: m.updated_at,
                 })
                 .collect(),
-        })
-    }
-
-    async fn memory_documents(
-        &self,
-        org_id: &str,
-        mem: &memoricai_core::model::Memory,
-    ) -> Option<Vec<memoricai_core::model::Document>> {
-        let doc_id = mem.document_id.as_deref()?;
-        self.db
-            .get_document(org_id, doc_id)
-            .await
-            .ok()
-            .map(|d| vec![d])
+        }
     }
 
     /// `/v1/profile` — profile fast path (+ optional combined search).
@@ -715,6 +732,7 @@ impl Engine {
             .search_memories(
                 org_id,
                 &embedding_index.id,
+                embedding_index.dimension,
                 Some(&req.container_tag),
                 &qvec,
                 req.max_forget as i64,

@@ -54,7 +54,7 @@ pub async fn revoke_scoped_key(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     state.auth.authorize_admin(&ctx)?;
-    let ok = state.auth.db().revoke_key(&ctx.org.id, &id).await?;
+    let ok = state.auth.revoke_key(&ctx.org.id, &id).await?;
     if !ok {
         return Err(ApiError(Error::NotFound(format!("scoped key {id}"))));
     }
