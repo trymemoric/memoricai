@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! memoricai-api: the axum HTTP surface for `/v1`, with API-key auth,
 //! tenant scoping, error shapes, and OpenAPI. `build_router` returns the app the
 //! binary mounts.

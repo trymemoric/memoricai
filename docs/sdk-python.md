@@ -2,7 +2,8 @@
 
 Stdlib-only client for the [`/v1` HTTP API](api.md). Python 3.9+, no
 dependencies. Methods take keyword arguments in snake_case and translate to the
-API's camelCase; all methods return the decoded JSON response as a `dict`.
+API's camelCase. JSON methods return decoded dictionaries; non-JSON router
+streams are returned as bytes.
 
 ```bash
 pip install memoricai
@@ -30,7 +31,7 @@ print(client.profile("mc_project_default"))
 Client(base_url, api_key, timeout=120.0, max_retries=4)
 ```
 
-- Transient failures (**429, 500, 502, 503**) are retried with exponential
+- Transient failures (**429 and all 5xx responses**) are retried with exponential
   backoff (1 s, 2 s, 4 s, …) up to `max_retries` times.
 - Other non-2xx responses raise **`MemoricaiError(status, message)`** with the
   message from the server's error envelope.
@@ -45,7 +46,8 @@ Client(base_url, api_key, timeout=120.0, max_retries=4)
 ```python
 client.add_document(content, *, container_tag=None, metadata=None,
                     custom_id=None, title=None, content_type=None,
-                    entity_context=None) -> dict        # POST /v1/documents
+                    entity_context=None, container_tags=None,
+                    raw=None) -> dict                   # POST /v1/documents
 client.add_text(...)                                    # alias of add_document
 client.get_document(doc_id) -> dict                     # GET /v1/documents/{id}
 client.delete_document(doc_id)                          # DELETE /v1/documents/{id}
@@ -60,12 +62,13 @@ client.wait_for_document(doc_id, timeout=120.0) -> dict # poll until "done"
 client.search_documents(q, *, container_tags=None, limit=10,
                         chunk_threshold=0.5, document_threshold=0.5,
                         include_full_docs=False, rerank=False,
-                        rewrite_query=False) -> dict     # POST /v1/documents/search
+                        rewrite_query=False, doc_id=None,
+                        include_summary=False, filters=None) -> dict
 
 client.search_memories(q, *, container_tag=None, search_mode="hybrid",
                        limit=10, threshold=0.5, digest=False,
                        rerank=False, rewrite_query=False,
-                       include=None) -> dict             # POST /v1/search
+                       include=None, filters=None) -> dict # POST /v1/search
 
 client.build_context(q, *, container_tag=None, mode="auto",
                      budget_tokens=12000, max_sources=8, threshold=0.5,
@@ -84,7 +87,7 @@ and explicit budget/source-limit omission diagnostics.
 
 ```python
 client.profile(container_tag, *, q=None, threshold=None,
-               include=None, buckets=None) -> dict       # POST /v1/profile
+               include=None, buckets=None, filters=None) -> dict
 ```
 
 ### Memories
@@ -97,7 +100,7 @@ client.patch_memory(new_content, *, memory_id=None, metadata=None) -> dict
                                                           # PATCH /v1/memories
 client.forget_memory(container_tag, *, memory_id=None,
                      content=None, reason=None) -> dict   # DELETE /v1/memories
-client.forget_matching(container_tag, query, *, threshold=0.8,
+client.forget_matching(container_tag, query, *, threshold=0.5,
                        max_forget=100, dry_run=True, reason=None) -> dict
                                                           # POST /v1/memories/forget-matching
 ```
@@ -108,5 +111,14 @@ the server default of `false`), pass `dry_run=False` to actually forget.
 ### Misc
 
 ```python
-client.health() -> dict   # GET /health
+client.health() -> dict
+client.openapi() -> dict
+client.request(method, path, body=None, **options)  # forward-compatible JSON
 ```
+
+The client also exposes the complete v0.3.2 management surface: batch/file
+ingestion, document patch/processing/bulk operations, projects and container
+tags, organization settings, scoped keys, profile buckets, inferred-memory
+review, analytics, connectors, MCP helpers, provisioning, and the memory
+router. Methods use the same snake_case naming as the examples above; see
+`Client` in `sdks/python/memoricai/__init__.py` for signatures.

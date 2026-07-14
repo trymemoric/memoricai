@@ -26,7 +26,10 @@ println!("{}", res.digest.unwrap_or_default());
 # }
 ```
 
-Covers the full `/v1` API: documents (add/get/list/delete/search), memory-graph
-search with the `digest` context mode, profiles, and direct memory management
-(create/patch/forget/bulk-forget). Request/response types are re-exported from
-`memoricai-core`, the same definitions the server compiles against.
+Covers the full v0.3.2 `/v1` API: batch/file ingestion and document lifecycle,
+search/context/profile, direct memory management, projects, settings, scoped
+keys, analytics, connectors, buckets, inferred-memory review, MCP helpers,
+provisioning, and the memory router. Router responses remain raw so callers can
+consume streamed SSE bodies. Shared request/response types are re-exported from
+`memoricai-core`; `request_json` is available for forward-compatible access to
+new endpoints.

@@ -18,3 +18,9 @@ print(client.profile("mc_project_default"))
 
 Install from the repo: `pip install ./sdks/python`. Transient failures (429/5xx)
 are retried with exponential backoff; API errors raise `MemoricaiError(status, message)`.
+
+The client covers the complete v0.3.2 engine surface: batch and multipart
+ingestion, document lifecycle operations, search/context/profile, memory
+management, projects and container tags, settings and scoped keys, buckets and
+inferred-memory review, analytics, connectors, MCP helpers, provisioning, and
+the memory router. `request()` is the forward-compatible low-level escape hatch.

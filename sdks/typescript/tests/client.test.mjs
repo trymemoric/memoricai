@@ -27,8 +27,9 @@ test("sends auth, JSON, and a normalized base URL", async (t) => {
   assert.deepEqual(result, { id: "doc_1", status: "queued" });
   assert.equal(request.url, "https://memory.example/v1/documents");
   assert.equal(request.init.method, "POST");
-  assert.equal(request.init.headers.Authorization, "Bearer mc_test");
-  assert.equal(request.init.headers["Content-Type"], "application/json");
+  const headers = new Headers(request.init.headers);
+  assert.equal(headers.get("Authorization"), "Bearer mc_test");
+  assert.equal(headers.get("Content-Type"), "application/json");
   assert.deepEqual(JSON.parse(request.init.body), {
     content: "Ada likes compilers",
     containerTag: "project_a",
@@ -102,6 +103,87 @@ test("buildContext uses the bounded context endpoint", async (t) => {
     budgetTokens: 1000,
     maxSources: 5,
   });
+});
+
+test("covers management and connector routes with encoded path segments", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse(200, {});
+  };
+  const client = new MemoricaiClient("https://memory.example", "mc_test");
+
+  await client.updateContainerTag("team/a", { name: "Team A" });
+  await client.connectionResources("conn/a", { page: 2, perPage: 50 });
+  await client.createScopedKey({ containerTag: "team/a", rateLimitMax: 100 });
+
+  assert.equal(requests[0].url, "https://memory.example/v1/container-tags/team%2Fa");
+  assert.equal(
+    requests[1].url,
+    "https://memory.example/v1/connections/conn%2Fa/resources?page=2&perPage=50",
+  );
+  assert.equal(requests[2].url, "https://memory.example/v1/auth/scoped-key");
+});
+
+test("router keeps upstream auth separate and returns a streamable response", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  let request;
+  globalThis.fetch = async (url, init) => {
+    request = { url, init };
+    return new Response("data: done\n\n", {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+  const client = new MemoricaiClient("https://memory.example", "mc_test");
+
+  const response = await client.routerRequest(
+    "https://api.example/v1/chat/completions?api-version=1",
+    { stream: true, messages: [] },
+    "upstream-key",
+    "project-a",
+  );
+
+  assert.equal(
+    request.url,
+    "https://memory.example/v1/router/https://api.example/v1/chat/completions%3Fapi-version=1",
+  );
+  const headers = new Headers(request.init.headers);
+  assert.equal(headers.get("Authorization"), "Bearer upstream-key");
+  assert.equal(headers.get("x-memoricai-api-key"), "mc_test");
+  assert.equal(headers.get("x-mc-project"), "project-a");
+  assert.equal(await response.text(), "data: done\n\n");
+});
+
+test("OAuth token exchange uses form encoding", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  let request;
+  globalThis.fetch = async (url, init) => {
+    request = { url, init };
+    return jsonResponse(200, { access_token: "token", token_type: "Bearer", expires_in: 3600 });
+  };
+  const client = new MemoricaiClient("https://memory.example", "");
+
+  await client.exchangeOAuthToken({
+    grant_type: "authorization_code",
+    client_id: "client_1",
+    code: "code with spaces",
+    redirect_uri: "http://localhost/callback",
+  });
+
+  assert.equal(request.url, "https://memory.example/api/auth/oauth2/token");
+  assert.equal(new Headers(request.init.headers).get("Content-Type"), "application/x-www-form-urlencoded");
+  assert.equal(request.init.body.get("code"), "code with spaces");
 });
 
 test("surfaces structured API errors without retrying permanent failures", async (t) => {

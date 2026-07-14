@@ -35,6 +35,20 @@ export interface AddDocumentRequest {
   entityContext?: string;
   contentType?: string;
   title?: string;
+  raw?: string;
+}
+
+export interface BatchIngestRequest {
+  documents: AddDocumentRequest[];
+  containerTag?: string;
+  entityContext?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BatchIngestResponse {
+  results: Array<{ id?: string; status: string; error?: string }>;
+  success: number;
+  failed: number;
 }
 
 export interface IngestResponse {
@@ -63,6 +77,15 @@ export interface DocumentListResponse {
     totalItems: number;
     totalPages: number;
   };
+}
+
+export interface DocumentListRequest {
+  containerTags?: string[];
+  page?: number;
+  limit?: number;
+  status?: string;
+  sort?: string;
+  order?: "asc" | "desc";
 }
 
 export interface DocumentSearchRequest {
@@ -213,10 +236,46 @@ export interface ProfileResponse {
   searchResults?: MemorySearchResponse;
 }
 
+export interface ProfileRequest {
+  containerTag: string;
+  q?: string;
+  threshold?: number;
+  filters?: unknown;
+  include?: string[];
+  buckets?: string[];
+}
+
 export interface MemoryInput {
   content: string;
   isStatic?: boolean;
   metadata?: Record<string, unknown>;
+}
+
+export interface CreatedMemory {
+  id: string;
+  memory: string;
+  isStatic: boolean;
+  createdAt: string;
+}
+
+export interface CreateMemoriesResponse {
+  documentId: string | null;
+  memories: CreatedMemory[];
+}
+
+export interface ForgetCandidate {
+  id: string;
+  memory: string;
+  similarity: number;
+}
+
+export interface ForgetMatchingResponse {
+  dryRun: boolean;
+  count: number;
+  forgetBatchId?: string;
+  summary: string;
+  candidates?: ForgetCandidate[];
+  forgotten?: ForgetCandidate[];
 }
 
 export interface MemoricaiMemory {
@@ -225,6 +284,165 @@ export interface MemoricaiMemory {
   version: number;
   isLatest: boolean;
   [key: string]: unknown;
+}
+
+export interface Pagination {
+  currentPage: number;
+  limit: number;
+  totalItems: number;
+  totalPages: number;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  containerTag: string;
+  emoji?: string;
+  createdAt: string;
+  updatedAt: string;
+  isExperimental: boolean;
+  documentCount?: number;
+}
+
+export interface OrganizationSettings {
+  shouldLlmFilter: boolean;
+  filterPrompt?: string;
+  categories?: string[];
+  includeItems?: string[];
+  excludeItems?: string[];
+  chunkSize: number;
+}
+
+export interface UpdateSettingsRequest {
+  shouldLlmFilter?: boolean;
+  filterPrompt?: string;
+  categories?: string[];
+  includeItems?: string[];
+  excludeItems?: string[];
+  chunkSize?: number;
+}
+
+export interface SessionResponse {
+  user: { id: string; email: string; name?: string };
+  org: { id: string; name: string; metadata?: unknown };
+}
+
+export interface CreateScopedKeyRequest {
+  containerTag: string;
+  name?: string;
+  expiresInDays?: number;
+  rateLimitMax?: number;
+  rateLimitTimeWindow?: number;
+}
+
+export interface CreateScopedKeyResponse {
+  key: string;
+  id: string;
+  name: string;
+  containerTag: string;
+  expiresAt?: string;
+  allowedEndpoints: string[];
+}
+
+export interface ProfileBucket {
+  key: string;
+  description: string;
+}
+
+export interface InferredMemory {
+  id: string;
+  memory: string;
+  parentCount: number;
+  createdAt: string;
+  updatedAt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface AnalyticsQuery {
+  period?: "1h" | "24h" | "7d" | "30d" | "90d" | "all";
+  page?: number;
+  limit?: number;
+}
+
+export interface Connection {
+  id: string;
+  provider: string;
+  userId?: string;
+  email?: string;
+  documentLimit: number;
+  containerTags: string[];
+  expiresAt?: string;
+  metadata: Record<string, unknown>;
+  lastSyncedAt?: string;
+  createdAt: string;
+}
+
+export interface CreateConnectionRequest {
+  redirectUrl?: string;
+  containerTags?: string[];
+  documentLimit?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreateConnectionResponse {
+  id: string;
+  authLink: string | null;
+  expiresIn: string | null;
+  redirectsTo: string | null;
+}
+
+export interface SyncRun {
+  id: string;
+  connectionId: string;
+  status: string;
+  triggerType: string;
+  errorKind?: string;
+  startedAt: string;
+  completedAt?: string;
+  itemsProcessed: number;
+  itemsFailed: number;
+  error?: string;
+}
+
+export interface RegisterOAuthClientRequest {
+  redirect_uris: string[];
+  client_name?: string;
+  grant_types?: Array<"authorization_code" | "refresh_token">;
+  token_endpoint_auth_method?: "none" | "client_secret_post";
+}
+
+export interface RegisterOAuthClientResponse {
+  client_id: string;
+  client_secret?: string;
+  redirect_uris: string[];
+  grant_types: string[];
+  token_endpoint_auth_method: string;
+}
+
+export interface OAuthTokenRequest {
+  grant_type: "authorization_code" | "refresh_token";
+  client_id: string;
+  client_secret?: string;
+  code?: string;
+  redirect_uri?: string;
+  code_verifier?: string;
+  refresh_token?: string;
+}
+
+export interface OAuthTokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+  refresh_token?: string;
+  scope?: string;
+}
+
+type QueryValue = string | number | boolean | undefined;
+
+export interface RawRequestOptions {
+  query?: Record<string, QueryValue>;
+  headers?: HeadersInit;
+  body?: BodyInit;
 }
 
 export interface ClientOptions {
@@ -247,28 +465,38 @@ export class MemoricaiClient {
     this.maxRetries = options.maxRetries ?? 4;
   }
 
-  private async request<T>(
+  private url(path: string, query?: Record<string, QueryValue>): string {
+    const url = new URL(this.baseUrl + path);
+    for (const [key, value] of Object.entries(query ?? {})) {
+      if (value !== undefined) url.searchParams.set(key, String(value));
+    }
+    return url.toString();
+  }
+
+  /**
+   * Low-level transport for router streaming and forward-compatible access to
+   * newly introduced engine endpoints. Prefer the typed methods below.
+   */
+  async requestRaw(
     method: string,
     path: string,
-    body?: unknown,
-  ): Promise<T> {
+    options: RawRequestOptions = {},
+  ): Promise<Response> {
     for (let attempt = 0; ; attempt++) {
-      const resp = await fetch(this.baseUrl + path, {
+      const headers = new Headers(options.headers);
+      if (!headers.has("Authorization")) {
+        headers.set("Authorization", `Bearer ${this.apiKey}`);
+      }
+      const resp = await fetch(this.url(path, options.query), {
         method,
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-        },
-        body: body !== undefined ? JSON.stringify(body) : undefined,
+        headers,
+        body: options.body,
         signal: AbortSignal.timeout(this.timeoutMs),
       });
-      if (resp.ok) {
-        const text = await resp.text();
-        return (text ? JSON.parse(text) : undefined) as T;
-      }
+      if (resp.ok) return resp;
       const status = resp.status;
       const text = await resp.text();
-      if ([429, 500, 502, 503].includes(status) && attempt < this.maxRetries) {
+      if ((status === 429 || status >= 500) && attempt < this.maxRetries) {
         await new Promise((r) => setTimeout(r, 2 ** attempt * 1000));
         continue;
       }
@@ -283,8 +511,52 @@ export class MemoricaiClient {
     }
   }
 
-  async health(): Promise<{ status: string; version: string }> {
+  /** Send JSON and decode a JSON response. */
+  async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    options: Omit<RawRequestOptions, "body"> = {},
+  ): Promise<T> {
+    const headers = new Headers(options.headers);
+    if (body !== undefined) headers.set("Content-Type", "application/json");
+    const resp = await this.requestRaw(method, path, {
+      ...options,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    const text = await resp.text();
+    return (text ? JSON.parse(text) : undefined) as T;
+  }
+
+  async health(): Promise<{ service: string; status: string; version: string }> {
     return this.request("GET", "/health");
+  }
+
+  async openapi(): Promise<Record<string, unknown>> {
+    return this.request("GET", "/v1/openapi");
+  }
+
+  async oauthMetadata(): Promise<Record<string, unknown>> {
+    return this.request("GET", "/.well-known/oauth-authorization-server");
+  }
+
+  async registerOAuthClient(
+    req: RegisterOAuthClientRequest,
+  ): Promise<RegisterOAuthClientResponse> {
+    return this.request("POST", "/api/auth/oauth2/register", req);
+  }
+
+  async exchangeOAuthToken(req: OAuthTokenRequest): Promise<OAuthTokenResponse> {
+    const form = new URLSearchParams();
+    for (const [key, value] of Object.entries(req)) {
+      if (value !== undefined) form.set(key, value);
+    }
+    const response = await this.requestRaw("POST", "/api/auth/oauth2/token", {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form,
+    });
+    return response.json() as Promise<OAuthTokenResponse>;
   }
 
   // ---------------- documents ----------------
@@ -299,6 +571,37 @@ export class MemoricaiClient {
     return this.addDocument({ content, containerTag });
   }
 
+  async addDocuments(req: BatchIngestRequest): Promise<BatchIngestResponse> {
+    return this.request("POST", "/v1/documents/batch", req);
+  }
+
+  async uploadFile(
+    content: Blob | ArrayBuffer | Uint8Array,
+    filename: string,
+    options: {
+      containerTag?: string;
+      containerTags?: string[];
+      metadata?: Record<string, unknown>;
+      contentType?: string;
+    } = {},
+  ): Promise<IngestResponse> {
+    const form = new FormData();
+    if (options.containerTag !== undefined) form.append("containerTag", options.containerTag);
+    for (const tag of options.containerTags ?? []) form.append("containerTags", tag);
+    if (options.metadata !== undefined) {
+      form.append("metadata", JSON.stringify(options.metadata));
+    }
+    const blob = content instanceof Blob
+      ? content
+      : new Blob(
+          [content instanceof Uint8Array ? content.slice().buffer as ArrayBuffer : content],
+          { type: options.contentType ?? "application/octet-stream" },
+        );
+    form.append("file", blob, filename);
+    const response = await this.requestRaw("POST", "/v1/documents/file", { body: form });
+    return response.json() as Promise<IngestResponse>;
+  }
+
   async getDocument(id: string): Promise<MemoricaiDocument> {
     return this.request("GET", `/v1/documents/${encodeURIComponent(id)}`);
   }
@@ -307,13 +610,32 @@ export class MemoricaiClient {
     return this.request("DELETE", `/v1/documents/${encodeURIComponent(id)}`);
   }
 
-  async listDocuments(req: {
-    containerTags?: string[];
-    page?: number;
-    limit?: number;
-    status?: string;
-  }): Promise<DocumentListResponse> {
+  async patchDocument(
+    id: string,
+    req: { content?: string; metadata?: Record<string, unknown> },
+  ): Promise<MemoricaiDocument> {
+    return this.request("PATCH", `/v1/documents/${encodeURIComponent(id)}`, req);
+  }
+
+  async listDocuments(req: DocumentListRequest = {}): Promise<DocumentListResponse> {
     return this.request("POST", "/v1/documents/list", req);
+  }
+
+  async listDocumentsWithMemories(
+    req: Pick<DocumentListRequest, "containerTags" | "page" | "limit"> = {},
+  ): Promise<{ documents: Array<MemoricaiDocument & { memoryEntries: MemoricaiMemory[] }>; pagination: Pagination }> {
+    return this.request("POST", "/v1/documents/documents", req);
+  }
+
+  async listProcessingDocuments(): Promise<{ documents: MemoricaiDocument[] }> {
+    return this.request("GET", "/v1/documents/processing");
+  }
+
+  async bulkDeleteDocuments(req: {
+    ids?: string[];
+    containerTags?: string[];
+  }): Promise<{ success: boolean; deletedCount: number }> {
+    return this.request("DELETE", "/v1/documents/bulk", req);
   }
 
   /** POST /v1/documents/search — chunk-level RAG over documents. */
@@ -355,13 +677,7 @@ export class MemoricaiClient {
   }
 
   /** POST /v1/profile — static/dynamic/bucketed user profile. */
-  async profile(req: {
-    containerTag: string;
-    q?: string;
-    threshold?: number;
-    include?: string[];
-    buckets?: string[];
-  }): Promise<ProfileResponse> {
+  async profile(req: ProfileRequest): Promise<ProfileResponse> {
     return this.request("POST", "/v1/profile", req);
   }
 
@@ -371,13 +687,14 @@ export class MemoricaiClient {
   async createMemories(
     containerTag: string,
     memories: MemoryInput[],
-  ): Promise<{ memories: MemoricaiMemory[] }> {
+  ): Promise<CreateMemoriesResponse> {
     return this.request("POST", "/v1/memories", { containerTag, memories });
   }
 
   /** PATCH /v1/memories — versioned update (appends a new version). */
   async patchMemory(req: {
-    id: string;
+    id?: string;
+    content?: string;
     newContent: string;
     metadata?: Record<string, unknown>;
   }): Promise<MemoricaiMemory> {
@@ -406,8 +723,226 @@ export class MemoricaiClient {
     maxForget?: number;
     dryRun?: boolean;
     reason?: string;
-  }): Promise<unknown> {
+  }): Promise<ForgetMatchingResponse> {
     return this.request("POST", "/v1/memories/forget-matching", { dryRun: true, ...req });
+  }
+
+  // ---------------- projects / tags ----------------
+
+  async listProjects(): Promise<{ projects: Project[] }> {
+    return this.request("GET", "/v1/projects");
+  }
+
+  async listContainerTags(): Promise<{ projects: Project[] }> {
+    return this.listProjects();
+  }
+
+  async createProject(req: { name: string; emoji?: string }): Promise<Project> {
+    return this.request("POST", "/v1/projects", req);
+  }
+
+  async deleteProject(
+    id: string,
+    req: { action: "move" | "delete"; targetProjectId?: string } = { action: "delete" },
+  ): Promise<Record<string, unknown>> {
+    return this.request("DELETE", `/v1/projects/${encodeURIComponent(id)}`, req);
+  }
+
+  async updateContainerTag(
+    tag: string,
+    req: { name?: string; entityContext?: string },
+  ): Promise<Project> {
+    return this.request("PATCH", `/v1/container-tags/${encodeURIComponent(tag)}`, req);
+  }
+
+  async deleteContainerTag(tag: string): Promise<Record<string, unknown>> {
+    return this.request("DELETE", `/v1/container-tags/${encodeURIComponent(tag)}`);
+  }
+
+  // ---------------- settings / auth ----------------
+
+  async getSettings(): Promise<OrganizationSettings> {
+    return this.request("GET", "/v1/settings");
+  }
+
+  async updateSettings(req: UpdateSettingsRequest): Promise<OrganizationSettings> {
+    return this.request("PATCH", "/v1/settings", req);
+  }
+
+  async resetSettings(confirmation = "RESET"): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/settings/reset", { confirmation });
+  }
+
+  async session(): Promise<SessionResponse> {
+    return this.request("GET", "/v1/session");
+  }
+
+  async createScopedKey(req: CreateScopedKeyRequest): Promise<CreateScopedKeyResponse> {
+    return this.request("POST", "/v1/auth/scoped-key", req);
+  }
+
+  async revokeScopedKey(id: string): Promise<{ success: boolean }> {
+    return this.request("DELETE", `/v1/auth/scoped-key/${encodeURIComponent(id)}`);
+  }
+
+  // ---------------- profile buckets / inferred memories ----------------
+
+  async listProfileBuckets(containerTag?: string): Promise<{ buckets: ProfileBucket[] }> {
+    return this.request("POST", "/v1/profile/buckets", { containerTag });
+  }
+
+  async createProfileBucket(req: {
+    containerTag?: string;
+    key: string;
+    description: string;
+  }): Promise<ProfileBucket> {
+    return this.request("POST", "/v1/buckets", req);
+  }
+
+  async listInferredMemories(tag: string): Promise<{ memories: InferredMemory[]; total: number }> {
+    return this.request("GET", `/v1/container-tags/${encodeURIComponent(tag)}/inferred`);
+  }
+
+  async reviewInferredMemory(
+    tag: string,
+    memoryId: string,
+    action: "approve" | "decline" | "undo",
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/container-tags/${encodeURIComponent(tag)}/inferred/${encodeURIComponent(memoryId)}/review`,
+      { action },
+    );
+  }
+
+  // ---------------- analytics ----------------
+
+  private analytics<T>(resource: string, query: AnalyticsQuery = {}): Promise<T> {
+    return this.request("GET", `/v1/analytics/${resource}`, undefined, {
+      query: { period: query.period, page: query.page, limit: query.limit },
+    });
+  }
+
+  analyticsUsage(query: AnalyticsQuery = {}): Promise<Record<string, unknown>> {
+    return this.analytics("usage", query);
+  }
+
+  analyticsErrors(query: AnalyticsQuery = {}): Promise<Record<string, unknown>> {
+    return this.analytics("errors", query);
+  }
+
+  analyticsLogs(query: AnalyticsQuery = {}): Promise<Record<string, unknown>> {
+    return this.analytics("logs", query);
+  }
+
+  analyticsMemory(): Promise<{ totalMemories: number }> {
+    return this.analytics("memory");
+  }
+
+  analyticsChat(): Promise<{ tokensSaved: number; costSavedUsd: number }> {
+    return this.analytics("chat");
+  }
+
+  // ---------------- connections ----------------
+
+  async listConnections(req?: {
+    containerTags?: string[];
+    provider?: string;
+  }): Promise<Connection[]> {
+    return req === undefined
+      ? this.request("GET", "/v1/connections")
+      : this.request("POST", "/v1/connections/list", req);
+  }
+
+  async createConnection(
+    provider: string,
+    req: CreateConnectionRequest = {},
+  ): Promise<CreateConnectionResponse> {
+    return this.request("POST", `/v1/connections/${encodeURIComponent(provider)}`, req);
+  }
+
+  async getConnection(id: string): Promise<Connection> {
+    return this.request("GET", `/v1/connections/${encodeURIComponent(id)}`);
+  }
+
+  async deleteConnection(
+    idOrProvider: string,
+    deleteDocuments = true,
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "DELETE",
+      `/v1/connections/${encodeURIComponent(idOrProvider)}`,
+      undefined,
+      { query: { deleteDocuments } },
+    );
+  }
+
+  async importConnection(idOrProvider: string): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/connections/${encodeURIComponent(idOrProvider)}/import`,
+      {},
+    );
+  }
+
+  async connectionSyncRuns(id: string): Promise<SyncRun[]> {
+    return this.request("GET", `/v1/connections/${encodeURIComponent(id)}/sync-runs`);
+  }
+
+  async connectionResources(
+    id: string,
+    query: { page?: number; perPage?: number } = {},
+  ): Promise<unknown> {
+    return this.request(
+      "GET",
+      `/v1/connections/${encodeURIComponent(id)}/resources`,
+      undefined,
+      { query },
+    );
+  }
+
+  async configureConnection(id: string, configuration: unknown): Promise<unknown> {
+    return this.request(
+      "POST",
+      `/v1/connections/${encodeURIComponent(id)}/configure`,
+      configuration,
+    );
+  }
+
+  // ---------------- memory router / MCP OAuth helpers ----------------
+
+  /** Returns the raw response so callers retain access to streamed SSE bodies. */
+  routerRequest(
+    upstreamUrl: string,
+    body: unknown,
+    upstreamApiKey: string,
+    containerTag?: string,
+  ): Promise<Response> {
+    const headers = new Headers({
+      Authorization: `Bearer ${upstreamApiKey}`,
+      "Content-Type": "application/json",
+      "x-memoricai-api-key": this.apiKey,
+    });
+    if (containerTag !== undefined) headers.set("x-mc-project", containerTag);
+    const target = encodeURI(upstreamUrl.replace(/%/g, "%25"))
+      .replace(/\?/g, "%3F")
+      .replace(/#/g, "%23");
+    return this.requestRaw("POST", `/v1/router/${target}`, {
+      headers,
+      body: JSON.stringify(body),
+    });
+  }
+
+  mcpSessionWithKey(): Promise<Record<string, unknown>> {
+    return this.request("GET", "/v1/mcp/session-with-key");
+  }
+
+  connectMcpScope(body: unknown): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/mcp/connect-scope", body);
+  }
+
+  provision(orgName: string, email: string): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/admin/provision", { orgName, email });
   }
 }
 

@@ -21,3 +21,9 @@ console.log(res.digest);
 Build with `npm run build` (or use `src/index.ts` directly under Bun). Transient
 failures (429/5xx) are retried with exponential backoff; API errors throw
 `MemoricaiError` with `status` and `message`.
+
+The typed client covers the complete v0.3.2 engine surface, from batch/file
+ingestion through projects, settings, scoped keys, analytics, connectors, MCP
+helpers, and inferred-memory review. `routerRequest()` returns the raw
+`Response`, preserving streamed SSE bodies; `request()` and `requestRaw()` are
+forward-compatible low-level escape hatches.

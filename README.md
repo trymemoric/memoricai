@@ -150,7 +150,7 @@ See [Configuration](docs/configuration.md) for model setup examples and the comp
 
 ## HTTP API
 
-Authenticate with `Authorization: Bearer mc_...`. Errors return a consistent JSON shape with appropriate status codes. A minimal OpenAPI 3.1 discovery stub is served at `GET /v1/openapi`; `GET /health` is unauthenticated.
+Authenticate with `Authorization: Bearer mc_...`. Errors return a consistent JSON shape with appropriate status codes. A complete OpenAPI 3.1 route discovery document is served at `GET /v1/openapi`; `GET /health` is unauthenticated.
 
 JSON and multipart bodies are capped at 12 MiB; individual document/file content is capped at 10 MiB. Uploaded files are extracted in memory and are not exposed through a public filesystem route. URL ingestion and crawler redirects are DNS-resolved, pinned, size-limited, and blocked from private, loopback, link-local, and cloud-metadata ranges.
 
@@ -163,7 +163,7 @@ JSON and multipart bodies are capped at 12 MiB; individual document/file content
 | Projects | `GET/POST /v1/projects`, `DELETE /v1/projects/{id}`, `/v1/container-tags/*` (incl. inferred-memory review) |
 | Auth | `GET /v1/session`, `POST /v1/auth/scoped-key`, `DELETE /v1/auth/scoped-key/{id}` |
 | OAuth2/OIDC | `/api/auth/oauth2/{authorize,consent,token,register}`, `/.well-known/{oauth-authorization-server,openid-configuration}` |
-| Connections | `GET/POST /v1/connections`, `/v1/connections/{id}/{import,sync-runs,resources,configure}`, OAuth callbacks, webhooks |
+| Connections | `GET /v1/connections`, `POST /v1/connections/{provider}`, `/v1/connections/{id}/{import,sync-runs,resources,configure}`, OAuth callbacks, webhooks |
 | Analytics | `GET /v1/analytics/{usage,errors,logs,memory,chat}` |
 | Settings | `GET/PATCH /v1/settings`, `POST /v1/settings/reset` |
 | Memory Router | `POST /v1/router/{*target}`, OpenAI-compatible proxy; `Authorization` carries the upstream key, `x-memoricai-api-key` the memoricai key, optional `x-mc-project` selects the project |
@@ -172,7 +172,10 @@ See [`docs/api.md`](docs/api.md) for the full endpoint reference (request/respon
 
 ## SDKs
 
-First-party clients for the `/v1` API, all covering documents, search, budgeted context assembly, profiles, and memory management, with 429/5xx retry built in:
+First-party clients for the complete `/v1` API, including documents, search,
+budgeted context assembly, profiles, memory management, projects, settings,
+scoped keys, analytics, connectors, inferred-memory review, and the streaming
+memory router, with 429/5xx retry built in:
 
 | Language | Where | Install |
 |---|---|---|

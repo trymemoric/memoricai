@@ -1,12 +1,12 @@
 # Rust SDK (`memoricai-client`)
 
 Async client for the [`/v1` HTTP API](api.md), built on `reqwest`. Request and
-response types are re-exported from `memoricai-core`, the same definitions the
-server compiles against, so the SDK can never drift from the wire format.
+response types shared with the server are re-exported from `memoricai-core`;
+route-specific client types use the same camelCase wire contract.
 
 ```toml
 [dependencies]
-memoricai-client = "0.1"
+memoricai-client = "0.3.2"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -107,6 +107,14 @@ sources, and structured inclusion/omission diagnostics.
 
 `health() -> serde_json::Value`, `GET /health` (no auth needed server-side,
 but the SDK sends the key regardless).
+
+The client also covers the complete v0.3.2 management surface: batch/multipart
+ingestion; document patch, processing, and bulk operations; projects and
+container tags; settings and scoped keys; profile buckets and inferred-memory
+review; analytics; connectors; MCP helpers; provisioning; and the memory
+router. `router_request` returns `reqwest::Response` so callers can consume SSE
+streams directly. `request_json` is the forward-compatible escape hatch for
+later engine endpoints.
 
 ## Integration test
 

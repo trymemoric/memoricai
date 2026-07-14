@@ -33,7 +33,7 @@ new MemoricaiClient(baseUrl, apiKey, options?)
 // options: { timeoutMs?: number /* 120000 */, maxRetries?: number /* 4 */ }
 ```
 
-- Transient failures (**429, 500, 502, 503**) are retried with exponential
+- Transient failures (**429 and all 5xx responses**) are retried with exponential
   backoff (1 s, 2 s, 4 s, …) up to `maxRetries` times.
 - Other non-2xx responses throw **`MemoricaiError`** with `.status` and
   `.message` from the server's error envelope.
@@ -56,7 +56,7 @@ waitForDocument(id: string, timeoutMs = 120_000): Promise<MemoricaiDocument>
 ```
 
 `AddDocumentRequest`: `content` (required), `containerTag`, `containerTags`,
-`customId`, `metadata`, `entityContext`, `contentType`, `title`.
+`customId`, `metadata`, `entityContext`, `contentType`, `title`, and `raw`.
 
 `DocumentSearchRequest`: `q` (required), `containerTags`, `limit`,
 `chunkThreshold`, `documentThreshold`, `docId`, `includeFullDocs`,
@@ -97,8 +97,16 @@ forgetting (the server default is a real forget).
 ### Misc
 
 ```ts
-health(): Promise<{ status: string; version: string }>      // GET /health
+health(): Promise<{ service: string; status: string; version: string }> // GET /health
+openapi(): Promise<Record<string, unknown>>                  // GET /v1/openapi
 ```
+
+The typed client also covers batch/multipart ingestion, document
+patch/processing/bulk operations, projects and container tags, organization
+settings, scoped keys, buckets, inferred-memory review, analytics, connectors,
+MCP helpers, provisioning, and the memory router. `routerRequest()` returns the
+raw `Response` so SSE streaming remains available. `request()` and
+`requestRaw()` provide forward-compatible access to later engine endpoints.
 
 ## Exported types
 
@@ -108,4 +116,5 @@ health(): Promise<{ status: string; version: string }>      // GET /health
 `DocumentSearchResponse`, `ChunkHit`, `MemorySearchRequest`,
 `MemorySearchResult`, `MemorySearchResponse`, `Profile`, `ProfileResponse`,
 `ContextRequest`, `ContextEvidence`, `ContextDiagnostics`, `ContextResponse`,
-`MemoryInput`, `MemoricaiMemory`, `ClientOptions`.
+`MemoryInput`, `MemoricaiMemory`, `ClientOptions`, plus the project, settings,
+auth, analytics, bucket, inferred-memory, and connector request/response types.

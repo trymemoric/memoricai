@@ -2283,7 +2283,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memoricai"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "memoricai-api"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "axum",
  "chrono",
@@ -2329,7 +2329,7 @@ dependencies = [
 
 [[package]]
 name = "memoricai-auth"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "memoricai-client"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "memoricai-core",
  "reqwest",
@@ -2356,7 +2356,7 @@ dependencies = [
 
 [[package]]
 name = "memoricai-connectors"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2379,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "memoricai-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2391,7 +2391,7 @@ dependencies = [
 
 [[package]]
 name = "memoricai-db"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -2406,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "memoricai-engine"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "blake3",
  "chrono",
@@ -2426,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "memoricai-mcp"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "axum",
  "memoricai-auth",
@@ -2438,7 +2438,7 @@ dependencies = [
 
 [[package]]
 name = "memoricai-models"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

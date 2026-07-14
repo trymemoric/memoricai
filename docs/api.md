@@ -102,7 +102,7 @@ Response: `{ "memories": [Document…], "pagination": { "currentPage", "limit", 
 
 ### `GET /v1/documents/{id}` · `PATCH /v1/documents/{id}` · `DELETE /v1/documents/{id}`
 
-Get returns the full document including `content`, `status`, `metadata`, `containerTags`, timestamps. PATCH accepts ingest-shaped fields and reprocesses. DELETE removes the document, its chunks, and its derived memories (version chains repair themselves: a superseded predecessor becomes latest again). `{id}` may be the internal id or a `customId`.
+Get returns the full document including `content`, `status`, `metadata`, `containerTags`, timestamps. PATCH accepts `{ "content"?: string, "metadata"?: object }` and reprocesses. DELETE removes the document, its chunks, and its derived memories (version chains repair themselves: a superseded predecessor becomes latest again). `{id}` may be the internal id or a `customId`.
 
 ### `GET /v1/documents/processing`, documents not yet `done` · `DELETE /v1/documents/bulk`, bulk delete
 
@@ -257,7 +257,7 @@ PATCH fields (all optional): `shouldLlmFilter`, `filterPrompt`, `categories`, `i
 - `GET /v1/openapi` → machine-readable endpoint summary
 - `POST /mcp`, MCP Streamable-HTTP server (see README → MCP server)
 - OAuth2/OIDC: `/api/auth/oauth2/{authorize,consent,token,register}` + `/.well-known/{oauth-authorization-server,openid-configuration}`
-- Connections (data connectors): `GET|POST /v1/connections`, `POST /v1/connections/{id}/import`, `GET /v1/connections/{id}/{sync-runs,resources}`, provider OAuth callbacks and webhooks
+- Connections (data connectors): `GET /v1/connections`, `POST /v1/connections/{provider}`, `POST /v1/connections/{id}/import`, `GET /v1/connections/{id}/{sync-runs,resources}`, provider OAuth callbacks and webhooks
 
 ## Admin (provisioning)
 
