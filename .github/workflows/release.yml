@@ -71,3 +71,88 @@ jobs:
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Package publishing runs only on tag pushes. The workflow_dispatch path
+  # exists to rebuild an already-released Docker image; re-publishing an
+  # existing npm/PyPI/crate version would fail, so it is skipped there.
+  publish-npm:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Verify package version matches tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [[ "$tag" != "$pkg" ]]; then
+            echo "Tag $tag does not match @memoricai/sdk version $pkg" >&2
+            exit 1
+          fi
+      - name: Install dependencies
+        run: npm install
+      - name: Build
+        run: npm run build
+      - name: Test
+        run: npm test
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-pypi:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Verify package version matches tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(grep -m1 -E '^version[[:space:]]*=' sdks/python/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [[ "$tag" != "$pkg" ]]; then
+            echo "Tag $tag does not match memoricai (PyPI) version $pkg" >&2
+            exit 1
+          fi
+      - name: Build distribution
+        run: |
+          python -m pip install --upgrade build
+          python -m build sdks/python
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdks/python/dist
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+  publish-crates:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Verify workspace version matches tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [[ "$tag" != "$pkg" ]]; then
+            echo "Tag $tag does not match workspace version $pkg" >&2
+            exit 1
+          fi
+      # Publish in dependency order. Since Rust 1.66, `cargo publish` waits for
+      # each new version to land in the index before returning, so the client
+      # publish below resolves the freshly published core.
+      - name: Publish memoricai-core
+        run: cargo publish --manifest-path crates/memoricai-core/Cargo.toml --locked
+      - name: Publish memoricai-client
+        run: cargo publish --manifest-path crates/memoricai-client/Cargo.toml --locked

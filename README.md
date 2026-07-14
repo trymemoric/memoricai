@@ -281,6 +281,29 @@ python3 scripts/smoke_phase23.py <keyfile>    # OAuth, buckets, analytics, conne
 
 Quality gates enforced by the workspace and CI: formatting, unit tests, the Postgres/pgvector integration test, clippy with warnings denied, and `cargo audit`. The audit configuration narrowly ignores the `rsa` advisory reachable only through sqlx's disabled MySQL feature; `cargo tree -i rsa` confirms it is not compiled in this Postgres-only build. Builds never require a database (no sqlx compile-time macros).
 
+## Releasing & publishing
+
+Pushing a `v*` tag (e.g. `v0.1.5`) runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which publishes every artifact from CI in parallel:
+
+| Job | Publishes | Registry |
+| --- | --- | --- |
+| `ghcr-image` | Docker image | GHCR (`ghcr.io/trymemoric/memoricai`) — uses the built-in `GITHUB_TOKEN` |
+| `publish-npm` | `@memoricai/sdk` | npm |
+| `publish-pypi` | `memoricai` | PyPI |
+| `publish-crates` | `memoricai-core` then `memoricai-client` (dependency order) | crates.io |
+
+Each package job first checks that the tag matches the declared package version and fails fast on a mismatch, so every registry release stays in lockstep with the tag. Package publishing runs on tag pushes only — the `workflow_dispatch` path just rebuilds an already-released Docker image.
+
+**Required repository secrets** (GitHub → *Settings* → *Secrets and variables* → *Actions* → *New repository secret*):
+
+| Secret | How to create it |
+| --- | --- |
+| `NPM_TOKEN` | npmjs.com → *Access Tokens* → *Generate New Token* → **Automation** (bypasses 2FA in CI). The `@memoricai` org/scope must exist and the token owner must be able to publish to it. |
+| `PYPI_API_TOKEN` | pypi.org → *Account settings* → *API tokens* → *Add API token*. Scope it to the `memoricai` project (create a broader token for the first publish, then rotate to a project-scoped one). Paste the full `pypi-…` value. |
+| `CARGO_REGISTRY_TOKEN` | crates.io → *Account Settings* → *API Tokens* → *New Token* with the `publish-new` and `publish-update` scopes. |
+
+The Docker image needs no extra secret. To cut a release: bump the version in `Cargo.toml` (`[workspace.package]`), `sdks/typescript/package.json`, and `sdks/python/pyproject.toml` to the same value, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
 ## Contributing
 
 Issues and pull requests are welcome. Before submitting:
