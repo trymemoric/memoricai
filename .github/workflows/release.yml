@@ -83,7 +83,7 @@ jobs:
         working-directory: sdks/typescript
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
@@ -111,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Verify package version matches tag
@@ -156,3 +156,18 @@ jobs:
         run: cargo publish --manifest-path crates/memoricai-core/Cargo.toml --locked
       - name: Publish memoricai-client
         run: cargo publish --manifest-path crates/memoricai-client/Cargo.toml --locked
+
+  # Create the GitHub Release entry once every package has published, so the
+  # Releases tab reflects each tag (previously only the git tag existed).
+  github-release:
+    if: github.event_name == 'push'
+    needs: [ghcr-image, publish-npm, publish-pypi, publish-crates]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
