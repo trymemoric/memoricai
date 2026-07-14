@@ -385,6 +385,76 @@ impl Engine {
         }
     }
 
+    /// Assign every fact for one container tag to a profile bucket in a SINGLE LLM call,
+    /// returning one entry per fact (aligned by order). This replaces the previous
+    /// per-fact fan-out (one `list_buckets` query + one completion per fact). If the
+    /// batched response is malformed or the wrong length, it falls back to per-fact
+    /// [`Self::classify_bucket`] so classification quality is never worse than before.
+    pub async fn classify_buckets_batch(
+        &self,
+        org_id: &str,
+        container_tag: &str,
+        facts: &[String],
+    ) -> Result<Vec<Option<String>>> {
+        if facts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let buckets = self.db.list_buckets(org_id, Some(container_tag)).await?;
+        if buckets.is_empty() {
+            return Ok(vec![None; facts.len()]);
+        }
+        let listing = buckets
+            .iter()
+            .map(|b| format!("- {}: {}", b.key, b.description))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let numbered = facts
+            .iter()
+            .enumerate()
+            .map(|(i, fact)| format!("{i}. {fact}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let system = ChatMessage::system(
+            "Assign each numbered memory to ONE bucket by key, or \"none\" if it fits none. \
+             Respond ONLY as JSON {\"assignments\":[string,...]} with exactly one entry per \
+             memory, in the same order as the memories.",
+        );
+        let user = ChatMessage::user(format!("Buckets:\n{listing}\n\nMemories:\n{numbered}"));
+        let raw = self
+            .models
+            .llm
+            .complete(
+                vec![system, user],
+                ChatOptions {
+                    json: true,
+                    temperature: Some(0.0),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let keys: Vec<&str> = buckets.iter().map(|b| b.key.as_str()).collect();
+        if let Some(assignments) = parse_bucket_assignments(&raw, &keys, facts.len()) {
+            return Ok(assignments);
+        }
+        // Malformed or mis-sized batch response: fall back to per-fact classification so we
+        // never do worse than the previous behaviour (only reached when the model doesn't
+        // honour the batch format, so the fan-out cost is confined to that rare case).
+        tracing::warn!(
+            container_tag,
+            "batched bucket classification response was malformed; falling back to per-fact"
+        );
+        let mut out = Vec::with_capacity(facts.len());
+        for fact in facts {
+            out.push(
+                self.classify_bucket(org_id, container_tag, fact)
+                    .await
+                    .ok()
+                    .flatten(),
+            );
+        }
+        Ok(out)
+    }
+
     /// Aggregate old memories into `[Summary]` entries (per bucket + general).
     /// Runs periodically from the binary. Returns the number of summaries written.
     pub async fn aggregate_profile(&self, org_id: &str, container_tag: &str) -> Result<usize> {
@@ -560,6 +630,33 @@ fn extract_json_block(s: &str) -> &str {
     }
 }
 
+/// Parse a batched bucket-assignment response into one entry per fact (aligned by order).
+/// Returns `None` — signalling the caller to fall back to per-fact classification — when
+/// the response is unparseable or does not contain exactly `n` assignments. Within a valid
+/// response, `"none"` and any key not in `valid_keys` map to `None` (unbucketed).
+fn parse_bucket_assignments(
+    raw: &str,
+    valid_keys: &[&str],
+    n: usize,
+) -> Option<Vec<Option<String>>> {
+    let value: serde_json::Value = serde_json::from_str(raw.trim())
+        .or_else(|_| serde_json::from_str(extract_json_block(raw)))
+        .ok()?;
+    let arr = value.get("assignments")?.as_array()?;
+    if arr.len() != n {
+        return None;
+    }
+    Some(
+        arr.iter()
+            .map(|entry| {
+                entry.as_str().and_then(|key| {
+                    (key != "none" && valid_keys.contains(&key)).then(|| key.to_string())
+                })
+            })
+            .collect(),
+    )
+}
+
 pub(crate) fn parse_iso_date(s: &str) -> Option<Timestamp> {
     // Accept full RFC3339 or a bare date.
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
@@ -569,4 +666,51 @@ pub(crate) fn parse_iso_date(s: &str) -> Option<Timestamp> {
         return Some(d.and_hms_opt(0, 0, 0)?.and_utc());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bucket_assignments;
+
+    const KEYS: &[&str] = &["preferences", "work"];
+
+    #[test]
+    fn valid_batch_maps_keys_and_none() {
+        let raw = r#"{"assignments":["preferences","none","work"]}"#;
+        let got = parse_bucket_assignments(raw, KEYS, 3).expect("valid batch parses");
+        assert_eq!(
+            got,
+            vec![Some("preferences".to_string()), None, Some("work".to_string())]
+        );
+    }
+
+    #[test]
+    fn unknown_keys_become_unbucketed() {
+        // A hallucinated bucket key must not be assigned; it maps to None.
+        let raw = r#"{"assignments":["made_up","work"]}"#;
+        let got = parse_bucket_assignments(raw, KEYS, 2).expect("parses");
+        assert_eq!(got, vec![None, Some("work".to_string())]);
+    }
+
+    #[test]
+    fn wrong_length_signals_fallback() {
+        // Two assignments returned for three facts -> None, so the caller falls back
+        // to per-fact classification rather than misaligning buckets to facts.
+        let raw = r#"{"assignments":["work","preferences"]}"#;
+        assert!(parse_bucket_assignments(raw, KEYS, 3).is_none());
+    }
+
+    #[test]
+    fn malformed_json_signals_fallback() {
+        assert!(parse_bucket_assignments("not json at all", KEYS, 1).is_none());
+        assert!(parse_bucket_assignments(r#"{"other":[]}"#, KEYS, 1).is_none());
+    }
+
+    #[test]
+    fn tolerates_surrounding_prose() {
+        // extract_json_block salvages the object from a chatty response.
+        let raw = "Here you go: {\"assignments\":[\"work\"]} hope that helps";
+        let got = parse_bucket_assignments(raw, KEYS, 1).expect("salvaged");
+        assert_eq!(got, vec![Some("work".to_string())]);
+    }
 }
