@@ -1,5 +1,6 @@
 //! `/v1/settings`.
 
+use crate::routes::require_unrestricted_admin;
 use crate::{ApiError, ApiResult, AppState, Auth};
 use axum::extract::State;
 use axum::Json;
@@ -8,21 +9,6 @@ use memoricai_core::error::Error;
 use memoricai_core::model::OrgSettings;
 use serde::Deserialize;
 use serde_json::{json, Value};
-
-/// Org settings are org-wide, so a credential scoped to a subset of containers must
-/// never read or mutate them, even if the underlying membership is admin.
-fn require_unrestricted_admin(
-    state: &AppState,
-    ctx: &memoricai_core::model::AuthContext,
-) -> Result<(), ApiError> {
-    state.auth.authorize_admin(ctx)?;
-    if state.auth.is_container_restricted(ctx) {
-        return Err(ApiError(Error::Forbidden(
-            "container-restricted credential cannot access organization settings".into(),
-        )));
-    }
-    Ok(())
-}
 
 pub async fn get(State(state): State<AppState>, Auth(ctx): Auth) -> ApiResult<Json<OrgSettings>> {
     require_unrestricted_admin(&state, &ctx)?;

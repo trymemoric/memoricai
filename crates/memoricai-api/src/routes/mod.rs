@@ -20,6 +20,23 @@ use crate::{ApiError, AppState};
 use memoricai_core::dto::Pagination;
 use memoricai_core::model::AuthContext;
 
+/// Enforce admin role AND reject container-restricted credentials. Org-wide admin
+/// surfaces (settings, connectors, analytics) span every container, so a credential
+/// scoped to a subset of containers must never read or mutate them, even when the
+/// underlying membership is admin.
+pub(crate) fn require_unrestricted_admin(
+    state: &AppState,
+    ctx: &AuthContext,
+) -> Result<(), ApiError> {
+    state.auth.authorize_admin(ctx)?;
+    if state.auth.is_container_restricted(ctx) {
+        return Err(ApiError(memoricai_core::Error::Forbidden(
+            "container-restricted credential cannot access organization-wide resources".into(),
+        )));
+    }
+    Ok(())
+}
+
 /// Enforce container-tag scoping for a request that operates on `tag`.
 pub(crate) fn guard(
     state: &AppState,

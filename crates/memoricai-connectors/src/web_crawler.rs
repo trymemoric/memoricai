@@ -13,6 +13,11 @@ pub struct WebCrawler;
 
 const MAX_PAGES: usize = 25;
 const MAX_DEPTH: usize = 2;
+/// A single page can link to an unbounded number of same-host URLs; cap how many we
+/// harvest per page and how large the frontier can grow so a hostile or pathological
+/// site cannot exhaust memory during a crawl.
+const MAX_LINKS_PER_PAGE: usize = 100;
+const MAX_QUEUE: usize = MAX_PAGES * 100;
 
 static LINK_SEL: std::sync::LazyLock<Selector> =
     std::sync::LazyLock::new(|| Selector::parse("a[href]").unwrap());
@@ -34,6 +39,9 @@ fn extract(html: &str, base: &Url) -> (String, Vec<Url>) {
 
     let mut links = Vec::new();
     for a in doc.select(&LINK_SEL) {
+        if links.len() >= MAX_LINKS_PER_PAGE {
+            break;
+        }
         if let Some(href) = a.value().attr("href") {
             if let Ok(u) = base.join(href) {
                 if u.host_str() == base.host_str() {
@@ -96,8 +104,18 @@ impl Connector for WebCrawler {
             {
                 continue;
             }
-            let html = String::from_utf8_lossy(&fetched.bytes);
-            let (text, links) = extract(&html, &fetched.final_url);
+            // HTML parsing is CPU-bound; keep it off the async runtime worker threads.
+            let html = String::from_utf8_lossy(&fetched.bytes).into_owned();
+            let base = fetched.final_url.clone();
+            let (text, links) = match tokio::task::spawn_blocking(move || extract(&html, &base)).await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    tracing::warn!(url = %url, %error, "web-crawler html parse failed");
+                    stats.failed += 1;
+                    continue;
+                }
+            };
             if !text.trim().is_empty() {
                 if ctx
                     .ingest(
@@ -117,6 +135,9 @@ impl Connector for WebCrawler {
             }
             if depth < MAX_DEPTH {
                 for l in links {
+                    if queue.len() >= MAX_QUEUE {
+                        break;
+                    }
                     queue.push_back((l, depth + 1));
                 }
             }

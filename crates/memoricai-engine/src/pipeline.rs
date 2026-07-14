@@ -57,6 +57,23 @@ impl Engine {
             Vec::new()
         };
 
+        // Bound the text handed to the extraction LLM so a large (but within-limit)
+        // document cannot exceed the model context window and fail the entire ingest.
+        // Chunk embeddings, which power search, still cover the full document; only the
+        // extracted atomic memories are drawn from the leading portion.
+        let extraction_input: &str = {
+            const MAX_EXTRACTION_BYTES: usize = 100 * 1024;
+            if text.len() <= MAX_EXTRACTION_BYTES {
+                &text
+            } else {
+                let mut end = MAX_EXTRACTION_BYTES;
+                while end > 0 && !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                &text[..end]
+            }
+        };
+
         let mut prepared_memories = Vec::new();
         for tag in &tags {
             let entity_context = self
@@ -65,7 +82,7 @@ impl Engine {
                 .await?
                 .and_then(|space| space.entity_context);
             let facts = self
-                .extract_memories(&text, entity_context.as_deref(), Some(&settings))
+                .extract_memories(extraction_input, entity_context.as_deref(), Some(&settings))
                 .await?;
             let fact_texts: Vec<String> = facts.iter().map(|fact| fact.content.clone()).collect();
             let embeddings = self.models.embedder.embed_batch(&fact_texts).await?;

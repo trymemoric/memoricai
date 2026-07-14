@@ -193,7 +193,24 @@ impl Engine {
         }
 
         let filter = req.filters.as_ref().and_then(MetadataFilter::from_value);
-        let by_doc: Vec<(String, Vec<(String, f32)>)> = by_doc.into_iter().collect();
+        let mut by_doc: Vec<(String, Vec<(String, f32)>)> = by_doc.into_iter().collect();
+        // Rank documents by their best chunk score and bound how many full document rows
+        // we load into memory BEFORE fetching them. Otherwise a broad query matching many
+        // documents pulls every matched document's full content (up to 10 MiB each) into
+        // memory just to discard all but `limit` — a memory-exhaustion DoS. Without a
+        // metadata filter the top `limit` documents are exactly the answer; with one, keep
+        // bounded headroom so filtered-out candidates don't starve the page.
+        by_doc.sort_unstable_by(|a, b| {
+            let sa = a.1.iter().map(|(_, s)| *s).fold(f32::MIN, f32::max);
+            let sb = b.1.iter().map(|(_, s)| *s).fold(f32::MIN, f32::max);
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let scan_cap = if filter.is_some() {
+            (req.limit as usize).saturating_mul(4)
+        } else {
+            req.limit as usize
+        };
+        by_doc.truncate(scan_cap);
         let doc_futs: Vec<_> = by_doc
             .iter()
             .map(|(doc_id, _)| self.db.get_document(org_id, doc_id))
@@ -343,6 +360,16 @@ impl Engine {
 
             if req.digest {
                 digest = self.build_digest(org_id, &hits, aggregate).await?;
+            }
+
+            // Enriching each hit costs two sequential DB round-trips (context + documents).
+            // When we are not reranking, hits are already in final similarity order, so only
+            // the top `limit` can survive the terminal truncate — bound the work to the page
+            // actually returned instead of enriching the full (up to ~200) candidate slice.
+            // Reranking still needs the wider candidate set, so leave it untouched there.
+            // The digest is already built above from the full slice.
+            if !req.rerank {
+                hits.truncate(req.limit as usize);
             }
 
             for hit in hits {

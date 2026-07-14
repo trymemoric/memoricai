@@ -89,6 +89,11 @@ impl Config {
             })
             .unwrap_or_default();
         let provision_key = env_any(&["MEMORICAI_PROVISION_KEY"]);
+        if provision_key.as_deref().is_some_and(|key| key.len() < 24) {
+            anyhow::bail!(
+                "MEMORICAI_PROVISION_KEY must be at least 24 characters; use a long random secret"
+            );
+        }
         Ok(Self {
             database_url,
             bind,

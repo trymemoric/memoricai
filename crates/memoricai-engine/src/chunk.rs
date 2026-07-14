@@ -106,9 +106,33 @@ fn hard_split(s: String, max: usize) -> Vec<String> {
     if s.chars().count() <= max {
         return vec![s];
     }
+    let max = max.max(1);
     let mut out = Vec::new();
     let mut buf = String::new();
     for word in s.split_whitespace() {
+        // A single "word" with no interior whitespace can itself exceed the ceiling
+        // (minified JS/JSON, base64 blobs, whitespace-free CJK text). Break it on char
+        // boundaries so no chunk passes through oversized and later overflows the
+        // embedder's per-input limit, which would permanently fail the document.
+        if word.len() > max {
+            if !buf.is_empty() {
+                out.push(std::mem::take(&mut buf));
+            }
+            let mut count = 0usize;
+            let mut start = 0usize;
+            for (i, _) in word.char_indices() {
+                if count == max {
+                    out.push(word[start..i].to_string());
+                    start = i;
+                    count = 0;
+                }
+                count += 1;
+            }
+            if start < word.len() {
+                buf = word[start..].to_string();
+            }
+            continue;
+        }
         if buf.len() + word.len() + 1 > max && !buf.is_empty() {
             out.push(std::mem::take(&mut buf));
         }
@@ -149,6 +173,21 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert!(chunks[0].0.contains("alpha"));
         assert!(chunks[1].0.contains("beta"));
+    }
+
+    #[test]
+    fn whitespace_free_text_is_split_below_the_ceiling() {
+        // A long run of text with no whitespace (minified code, base64, CJK prose) must
+        // still be broken up rather than emitted as one giant chunk.
+        let blob = "a".repeat(100_000);
+        let chunks = chunk_text(&blob, "text", 1200);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|(c, _, _)| c.chars().count() <= 2400));
+
+        // Multibyte, whitespace-free text must not panic and must stay bounded.
+        let cjk = "字".repeat(50_000);
+        let chunks = chunk_text(&cjk, "text", 1200);
+        assert!(chunks.iter().all(|(c, _, _)| c.chars().count() <= 2400));
     }
 
     #[test]

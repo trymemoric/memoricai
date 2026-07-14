@@ -25,6 +25,19 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
                 return is_blocked_ip(IpAddr::V4(ipv4));
             }
             let octets = ip.octets();
+            // Addresses that embed an IPv4 address must be evaluated under the IPv4 policy,
+            // or they become an SSRF bypass on networks that route them (NAT64/DNS64, 6to4).
+            // NAT64 well-known prefix 64:ff9b::/96 carries the IPv4 in the low 32 bits.
+            if octets[..12] == [0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0] {
+                let v4 =
+                    std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+                return is_blocked_ip(IpAddr::V4(v4));
+            }
+            // 6to4 (2002::/16) carries the IPv4 in octets 2..6.
+            if octets[0] == 0x20 && octets[1] == 0x02 {
+                let v4 = std::net::Ipv4Addr::new(octets[2], octets[3], octets[4], octets[5]);
+                return is_blocked_ip(IpAddr::V4(v4));
+            }
             let unique_local = octets[0] & 0xfe == 0xfc; // fc00::/7
             let link_local = octets[0] == 0xfe && octets[1] & 0xc0 == 0x80; // fe80::/10
             ip.is_loopback()
@@ -52,6 +65,9 @@ mod tests {
             "fc00::1",
             "fe80::1",
             "::ffff:127.0.0.1",
+            "64:ff9b::7f00:1",     // NAT64-embedded 127.0.0.1
+            "64:ff9b::a9fe:a9fe",  // NAT64-embedded 169.254.169.254
+            "2002:7f00:1::",       // 6to4-embedded 127.0.0.1
         ] {
             assert!(is_blocked_ip(value.parse().unwrap()), "{value}");
         }

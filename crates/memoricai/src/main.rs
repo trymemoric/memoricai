@@ -217,6 +217,14 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     };
     let app = memoricai_api::build_router(state)
         .merge(memoricai_mcp::mcp_router(engine, auth))
+        // Body-size limit and body-read timeout are applied AFTER the MCP merge so the
+        // /mcp routes get the same protection as /v1 (the layers inside build_router only
+        // cover routes present when they were applied). Without the timeout, /mcp is a
+        // slowloris target.
+        .layer(axum::extract::DefaultBodyLimit::max(12 * 1024 * 1024))
+        .layer(tower_http::timeout::RequestBodyTimeoutLayer::new(
+            config.request_body_timeout,
+        ))
         .layer(axum::middleware::from_fn(memoricai_api::security_headers))
         .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
             config.max_inflight_requests,

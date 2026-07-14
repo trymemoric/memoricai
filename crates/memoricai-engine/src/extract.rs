@@ -208,8 +208,12 @@ async fn fetch_and_extract(url: &str) -> Result<Extracted> {
             "URL did not return HTML or plain text".into(),
         ));
     }
-    let html = String::from_utf8_lossy(&fetched.bytes);
-    Ok(html_to_text(&html))
+    // Parsing up to 10 MiB of HTML is CPU-bound; run it on the blocking pool so it does
+    // not stall the async worker threads (mirrors the PDF path).
+    let html = String::from_utf8_lossy(&fetched.bytes).into_owned();
+    tokio::task::spawn_blocking(move || html_to_text(&html))
+        .await
+        .map_err(|error| Error::Internal(error.to_string()))
 }
 
 pub static BODY_SEL: std::sync::LazyLock<Selector> = std::sync::LazyLock::new(|| {

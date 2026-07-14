@@ -32,10 +32,12 @@ impl Connector for Granola {
             .send()
             .await
             .map_err(net)?;
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(Error::Unauthorized("granola api key rejected".into()));
-        }
-        let v: Value = resp.json().await.map_err(net)?;
+        // Untrusted remote input: surface non-2xx (401/403/429/5xx) as real sync errors and
+        // read the body under a hard byte ceiling rather than buffering an unbounded response.
+        const MAX_GRANOLA_BYTES: usize = 10 * 1024 * 1024;
+        let bytes = crate::response_bytes_limited(resp, MAX_GRANOLA_BYTES).await?;
+        let v: Value = serde_json::from_slice(&bytes)
+            .map_err(|e| Error::Model(format!("granola response was not valid JSON: {e}")))?;
         let empty = vec![];
         let docs = v["documents"]
             .as_array()

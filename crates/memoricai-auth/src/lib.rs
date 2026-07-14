@@ -268,6 +268,11 @@ impl AuthService {
         if t.access_expires_at < Utc::now() {
             return Err(Error::Unauthorized("oauth token expired".into()));
         }
+        self.enforce_rate_limit_keyed(
+            &format!("oauth:{}", t.client_id),
+            OAUTH_RATE_LIMIT_MAX,
+            OAUTH_RATE_LIMIT_WINDOW_MS,
+        )?;
         let (org, user, membership) = tokio::try_join!(
             self.db.get_org(&t.org_id),
             self.db.get_user(&t.user_id),
@@ -525,22 +530,32 @@ impl AuthService {
     }
 
     fn enforce_rate_limit(&self, rec: &ApiKeyRecord) -> Result<()> {
-        if rec.rate_limit_max <= 0 {
+        self.enforce_rate_limit_keyed(&rec.id, rec.rate_limit_max, rec.rate_limit_window_ms)
+    }
+
+    /// Fixed-window limiter keyed by an arbitrary credential identifier.
+    fn enforce_rate_limit_keyed(&self, key: &str, max: i32, window_ms: i64) -> Result<()> {
+        if max <= 0 {
             return Ok(());
         }
         let now_ms = Utc::now().timestamp_millis();
         let mut map = self.limiter.lock().unwrap();
-        let entry = map.entry(rec.id.clone()).or_insert((now_ms, 0));
-        if now_ms - entry.0 >= rec.rate_limit_window_ms {
+        let entry = map.entry(key.to_string()).or_insert((now_ms, 0));
+        if now_ms - entry.0 >= window_ms {
             *entry = (now_ms, 0);
         }
         entry.1 += 1;
-        if entry.1 > rec.rate_limit_max as u32 {
+        if entry.1 > max as u32 {
             return Err(Error::RateLimited);
         }
         Ok(())
     }
 }
+
+/// Default fixed-window rate limit applied to OAuth2 access tokens (keyed per client),
+/// so bearer OAuth credentials — including Memory Router traffic — cannot bypass throttling.
+const OAUTH_RATE_LIMIT_MAX: i32 = 5000;
+const OAUTH_RATE_LIMIT_WINDOW_MS: i64 = 60_000;
 
 fn endpoint_is_allowed(ctx: &AuthContext, endpoint_path: &str) -> bool {
     ctx.allowed_endpoints.as_ref().is_none_or(|allowed| {

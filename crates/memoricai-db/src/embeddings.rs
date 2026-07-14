@@ -91,11 +91,16 @@ async fn queue_missing_backfill(
     .map_err(db_err)?;
     if missing {
         sqlx::query(
+            // Only re-open a job that previously completed ('done'), never one the circuit
+            // breaker gave up on ('failed'). Resetting 'failed' here every discovery tick
+            // would defeat the failure_count<10 breaker in claim_embedding_backfill_for_model
+            // and re-embed a poison row forever, burning provider quota. A failed job must be
+            // resolved deliberately (fix the row, then re-queue).
             "INSERT INTO embedding_backfill_jobs (index_id) VALUES ($1)
              ON CONFLICT (index_id) DO UPDATE
              SET status='queued', failure_count=0, lease_token=NULL, lease_until=NULL,
                  completed_at=NULL, next_attempt_at=now(), last_error=NULL, updated_at=now()
-             WHERE embedding_backfill_jobs.status IN ('done','failed')",
+             WHERE embedding_backfill_jobs.status = 'done'",
         )
         .bind(index_id)
         .execute(&mut **tx)

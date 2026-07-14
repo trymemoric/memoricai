@@ -1,6 +1,6 @@
 //! `/v1/analytics/*` — usage, errors, and request logs.
 
-use crate::routes::paginate;
+use crate::routes::{paginate, require_unrestricted_admin};
 use crate::{ApiResult, AppState, Auth};
 use axum::extract::{Query, State};
 use axum::routing::get;
@@ -43,7 +43,7 @@ pub async fn usage(
     Auth(ctx): Auth,
     Query(q): Query<AnalyticsQuery>,
 ) -> ApiResult<Json<AnalyticsUsageResponse>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     let days = days_for(q.period.as_deref());
     let (rows, total_memories) = tokio::try_join!(
         state.engine.db.usage_by_type(&ctx.org.id, days),
@@ -70,7 +70,7 @@ pub async fn errors(
     Auth(ctx): Auth,
     Query(q): Query<AnalyticsQuery>,
 ) -> ApiResult<Json<AnalyticsErrorsResponse>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     let days = days_for(q.period.as_deref());
     let (total, total_errors, by_status) = state.engine.db.error_stats(&ctx.org.id, days).await?;
     let rate = if total > 0 {
@@ -93,7 +93,7 @@ pub async fn logs(
     Auth(ctx): Auth,
     Query(q): Query<AnalyticsQuery>,
 ) -> ApiResult<Json<AnalyticsLogsResponse>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     let page = q.page.unwrap_or(1);
     let limit = q.limit.unwrap_or(20).min(100);
     let (rows, total) = state
@@ -118,12 +118,12 @@ pub async fn logs(
 }
 
 pub async fn memory(State(state): State<AppState>, Auth(ctx): Auth) -> ApiResult<Json<Value>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     let total = state.engine.db.total_memories(&ctx.org.id).await?;
     Ok(Json(json!({ "totalMemories": total })))
 }
 
 pub async fn chat(State(state): State<AppState>, Auth(ctx): Auth) -> ApiResult<Json<Value>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     Ok(Json(json!({ "tokensSaved": 0, "costSavedUsd": 0.0 })))
 }

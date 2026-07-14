@@ -447,6 +447,18 @@ impl Engine {
                 "customId must be 1..=255 printable characters".into(),
             ));
         }
+        // Document lookups resolve `id = $ OR custom_id = $`. A customId inside the internal
+        // document-id namespace ("doc_…") could equal a different document's real id and make
+        // that predicate match two rows (silent double-update). Reserve the prefix.
+        if req
+            .custom_id
+            .as_ref()
+            .is_some_and(|value| value.starts_with("doc_"))
+        {
+            return Err(Error::BadRequest(
+                "customId must not begin with the reserved \"doc_\" prefix".into(),
+            ));
+        }
         if req.title.as_ref().is_some_and(|value| value.len() > 512) {
             return Err(Error::BadRequest("title exceeds 512 bytes".into()));
         }

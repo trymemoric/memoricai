@@ -68,14 +68,23 @@ impl Db {
         Ok(buckets)
     }
 
-    pub async fn set_memory_bucket(&self, memory_id: &str, bucket_key: &str) -> Result<()> {
-        sqlx::query("UPDATE memories SET bucket_key = $2 WHERE id = $1")
-            .bind(memory_id)
-            .bind(bucket_key)
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(())
+    /// Scoped by `org_id` so a memory can never be reassigned across tenants. Returns
+    /// whether a row matched, letting callers distinguish not-found / cross-tenant.
+    pub async fn set_memory_bucket(
+        &self,
+        org_id: &str,
+        memory_id: &str,
+        bucket_key: &str,
+    ) -> Result<bool> {
+        let result =
+            sqlx::query("UPDATE memories SET bucket_key = $2 WHERE id = $1 AND org_id = $3")
+                .bind(memory_id)
+                .bind(bucket_key)
+                .bind(org_id)
+                .execute(&self.pool)
+                .await
+                .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn memories_in_bucket(

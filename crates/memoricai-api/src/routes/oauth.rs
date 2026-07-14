@@ -705,6 +705,8 @@ pub async fn as_metadata(headers: HeaderMap) -> ApiResult<Json<Value>> {
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
-        "scopes_supported": ["openid", "profile", "email", "offline_access"],
+        // Opaque OAuth2 tokens only — no OIDC ID tokens are issued, so `openid` (and the
+        // profile/email OIDC claim scopes) must not be advertised.
+        "scopes_supported": ["offline_access"],
     })))
 }

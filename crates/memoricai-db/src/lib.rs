@@ -34,8 +34,18 @@ pub struct Db {
 
 impl Db {
     pub async fn connect(url: &str) -> Result<Self> {
+        // A single search fans out several concurrent queries (buffered) and the server
+        // allows many inflight requests, so a fixed pool of 10 starves under modest load.
+        // Default higher, allow tuning, and cap acquisition wait so starvation surfaces as
+        // a fast, bounded error instead of an unbounded stall.
+        let max_connections = std::env::var("MEMORICAI_DB_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(20);
         let pool = PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(max_connections)
+            .acquire_timeout(std::time::Duration::from_secs(10))
             .connect(url)
             .await
             .map_err(db_err)?;

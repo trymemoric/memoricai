@@ -1,5 +1,6 @@
 //! `/v1/connections/*` — connector CRUD, OAuth callback, sync, and webhooks.
 
+use crate::routes::require_unrestricted_admin;
 use crate::{ApiError, ApiResult, AppState, Auth};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -48,10 +49,14 @@ fn redact_connection(mut connection: Connection) -> Connection {
             Value::Object(object) => {
                 for (key, value) in object {
                     let normalized = key.to_ascii_lowercase().replace(['-', '_'], "");
+                    // Keep this at least as broad as the at-rest encryption heuristic
+                    // (memoricai_db::crypto::is_sensitive_key, which encrypts any "*key*"
+                    // field such as S3 accessKeyId). If redaction were narrower, an
+                    // encrypted-at-rest value would be decrypted and returned in cleartext.
                     if normalized.contains("secret")
                         || normalized.contains("password")
                         || normalized.contains("token")
-                        || normalized == "apikey"
+                        || normalized.contains("key")
                     {
                         *value = Value::String("[REDACTED]".into());
                     } else {
@@ -110,7 +115,7 @@ pub async fn create(
     headers: HeaderMap,
     Json(req): Json<CreateConnectionRequest>,
 ) -> ApiResult<Json<CreateConnectionResponse>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     if !Connectors::supported().contains(&provider.as_str()) {
         return Err(ApiError(Error::BadRequest(format!(
             "unknown provider: {provider}"
@@ -128,7 +133,7 @@ pub async fn list_post(
     Auth(ctx): Auth,
     Json(req): Json<ConnectionListRequest>,
 ) -> ApiResult<Json<Vec<Connection>>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     let conns = connectors(&state)
         .list(
             &ctx.org.id,
@@ -143,7 +148,7 @@ pub async fn list_get(
     State(state): State<AppState>,
     Auth(ctx): Auth,
 ) -> ApiResult<Json<Vec<Connection>>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     let conns = connectors(&state).list(&ctx.org.id, None, None).await?;
     Ok(Json(conns.into_iter().map(redact_connection).collect()))
 }
@@ -153,7 +158,7 @@ pub async fn get_one(
     Auth(ctx): Auth,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Connection>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     let conn = connectors(&state)
         .get(&ctx.org.id, &id)
         .await?
@@ -176,7 +181,7 @@ pub async fn delete_one(
     Path(id): Path<String>,
     Query(q): Query<DeleteQuery>,
 ) -> ApiResult<Json<Value>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     // If `id` is a known connection, delete it; otherwise treat as a provider name.
     let c = connectors(&state);
     if let Some(conn) = c.get(&ctx.org.id, &id).await? {
@@ -197,7 +202,7 @@ pub async fn import(
     Path(id): Path<String>,
     Json(_req): Json<ImportRequest>,
 ) -> ApiResult<Json<Value>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     // `id` may be a connection id or a provider name; import matching connections.
     let c = connectors(&state);
     if c.get(&ctx.org.id, &id).await?.is_some() {
@@ -218,7 +223,7 @@ pub async fn sync_runs(
     Auth(ctx): Auth,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<SyncRun>>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     let runs = connectors(&state).sync_runs(&ctx.org.id, &id).await?;
     Ok(Json(runs))
 }
@@ -243,7 +248,7 @@ pub async fn resources(
     Path(id): Path<String>,
     Query(q): Query<ResourceQuery>,
 ) -> ApiResult<Json<Value>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     if q.page == 0 || q.per_page == 0 || q.per_page > 100 {
         return Err(ApiError(Error::BadRequest(
             "page must be positive and perPage must be between 1 and 100".into(),
@@ -261,7 +266,7 @@ pub async fn configure(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> ApiResult<Json<Value>> {
-    state.auth.authorize_admin(&ctx)?;
+    require_unrestricted_admin(&state, &ctx)?;
     let res = connectors(&state).configure(&ctx.org.id, &id, body).await?;
     Ok(Json(res))
 }

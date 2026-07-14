@@ -34,11 +34,30 @@ pub struct ProvisionResponse {
 /// Create an org + owner user + org API key for a customer signup. Meant to be
 /// called by the control plane, not end users; disabled unless
 /// `MEMORICAI_PROVISION_KEY` is set.
+/// Global fixed-window rate limit on the admin provision endpoint so the master
+/// credential cannot be brute-forced with high-rate guesses.
+fn provision_rate_ok() -> bool {
+    static WINDOW: std::sync::LazyLock<std::sync::Mutex<(i64, u32)>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new((0, 0)));
+    const WINDOW_MS: i64 = 60_000;
+    const MAX_PER_WINDOW: u32 = 10;
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut w = WINDOW.lock().unwrap();
+    if now - w.0 >= WINDOW_MS {
+        *w = (now, 0);
+    }
+    w.1 += 1;
+    w.1 <= MAX_PER_WINDOW
+}
+
 pub async fn provision(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<ProvisionRequest>,
 ) -> ApiResult<(StatusCode, Json<ProvisionResponse>)> {
+    if !provision_rate_ok() {
+        return Err(ApiError(Error::RateLimited));
+    }
     guard_provision(state.provision_key.as_deref(), &headers)?;
 
     let org_name = req.org_name.trim();
