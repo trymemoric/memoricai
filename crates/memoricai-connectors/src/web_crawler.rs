@@ -107,15 +107,15 @@ impl Connector for WebCrawler {
             // HTML parsing is CPU-bound; keep it off the async runtime worker threads.
             let html = String::from_utf8_lossy(&fetched.bytes).into_owned();
             let base = fetched.final_url.clone();
-            let (text, links) = match tokio::task::spawn_blocking(move || extract(&html, &base)).await
-            {
-                Ok(result) => result,
-                Err(error) => {
-                    tracing::warn!(url = %url, %error, "web-crawler html parse failed");
-                    stats.failed += 1;
-                    continue;
-                }
-            };
+            let (text, links) =
+                match tokio::task::spawn_blocking(move || extract(&html, &base)).await {
+                    Ok(result) => result,
+                    Err(error) => {
+                        tracing::warn!(url = %url, %error, "web-crawler html parse failed");
+                        stats.failed += 1;
+                        continue;
+                    }
+                };
             if !text.trim().is_empty() {
                 if ctx
                     .ingest(

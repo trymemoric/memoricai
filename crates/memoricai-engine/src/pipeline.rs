@@ -107,11 +107,7 @@ impl Engine {
                 continue;
             }
             let facts = self
-                .extract_memories(
-                    extraction_input,
-                    entity_context.as_deref(),
-                    Some(&settings),
-                )
+                .extract_memories(extraction_input, entity_context.as_deref(), Some(&settings))
                 .await?;
             let fact_texts: Vec<String> = facts.iter().map(|fact| fact.content.clone()).collect();
             let embeddings = self.models.embedder.embed_batch(&fact_texts).await?;

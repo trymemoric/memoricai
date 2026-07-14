@@ -29,8 +29,7 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
             // or they become an SSRF bypass on networks that route them (NAT64/DNS64, 6to4).
             // NAT64 well-known prefix 64:ff9b::/96 carries the IPv4 in the low 32 bits.
             if octets[..12] == [0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0] {
-                let v4 =
-                    std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+                let v4 = std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
                 return is_blocked_ip(IpAddr::V4(v4));
             }
             // 6to4 (2002::/16) carries the IPv4 in octets 2..6.
@@ -65,9 +64,9 @@ mod tests {
             "fc00::1",
             "fe80::1",
             "::ffff:127.0.0.1",
-            "64:ff9b::7f00:1",     // NAT64-embedded 127.0.0.1
-            "64:ff9b::a9fe:a9fe",  // NAT64-embedded 169.254.169.254
-            "2002:7f00:1::",       // 6to4-embedded 127.0.0.1
+            "64:ff9b::7f00:1",    // NAT64-embedded 127.0.0.1
+            "64:ff9b::a9fe:a9fe", // NAT64-embedded 169.254.169.254
+            "2002:7f00:1::",      // 6to4-embedded 127.0.0.1
         ] {
             assert!(is_blocked_ip(value.parse().unwrap()), "{value}");
         }

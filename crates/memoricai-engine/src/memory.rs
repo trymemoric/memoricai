@@ -680,7 +680,11 @@ mod tests {
         let got = parse_bucket_assignments(raw, KEYS, 3).expect("valid batch parses");
         assert_eq!(
             got,
-            vec![Some("preferences".to_string()), None, Some("work".to_string())]
+            vec![
+                Some("preferences".to_string()),
+                None,
+                Some("work".to_string())
+            ]
         );
     }
 
