@@ -233,6 +233,38 @@ class Client:
             ),
         )
 
+    def build_context(
+        self,
+        q: str,
+        *,
+        container_tag: Optional[str] = None,
+        mode: str = "auto",
+        budget_tokens: int = 12_000,
+        max_sources: int = 8,
+        threshold: float = 0.5,
+        rewrite_query: bool = False,
+        filters: Optional[dict] = None,
+        include_digest: bool = True,
+    ) -> dict:
+        """POST /v1/context — bounded, source-aware context ready for an LLM prompt."""
+        return self._request(
+            "POST",
+            "/v1/context",
+            _drop_none(
+                {
+                    "q": q,
+                    "containerTag": container_tag,
+                    "mode": mode,
+                    "budgetTokens": budget_tokens,
+                    "maxSources": max_sources,
+                    "threshold": threshold,
+                    "rewriteQuery": rewrite_query,
+                    "filters": filters,
+                    "includeDigest": include_digest,
+                }
+            ),
+        )
+
     def profile(
         self,
         container_tag: str,

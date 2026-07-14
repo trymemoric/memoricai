@@ -37,6 +37,17 @@ class ClientTests(unittest.TestCase):
         # Guards against __version__ drifting from the packaged version again.
         self.assertEqual(__version__, "0.3.0")
 
+    def test_build_context_uses_context_endpoint_and_camel_case_body(self):
+        with patch.object(Client, "_request", return_value={}) as request:
+            self.client.build_context(
+                "count visits", budget_tokens=1_000, max_sources=5
+            )
+        method, path, body = request.call_args[0]
+        self.assertEqual((method, path), ("POST", "/v1/context"))
+        self.assertEqual(body["q"], "count visits")
+        self.assertEqual(body["budgetTokens"], 1_000)
+        self.assertEqual(body["maxSources"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

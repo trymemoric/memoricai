@@ -77,6 +77,33 @@ test("forgetMatching is dry-run by default and honors explicit false", async (t)
   assert.equal(bodies[1].dryRun, false);
 });
 
+test("buildContext uses the bounded context endpoint", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  let request;
+  globalThis.fetch = async (url, init) => {
+    request = { url, body: JSON.parse(init.body) };
+    return jsonResponse(200, {
+      context: "Relevant source excerpts:\n",
+      evidence: [],
+      diagnostics: {},
+      timing: 1,
+    });
+  };
+  const client = new MemoricaiClient("https://memory.example", "mc_test");
+
+  await client.buildContext({ q: "count visits", budgetTokens: 1000, maxSources: 5 });
+
+  assert.equal(request.url, "https://memory.example/v1/context");
+  assert.deepEqual(request.body, {
+    q: "count visits",
+    budgetTokens: 1000,
+    maxSources: 5,
+  });
+});
+
 test("surfaces structured API errors without retrying permanent failures", async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => {

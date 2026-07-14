@@ -84,12 +84,15 @@ marks the document `failed`, and `ClientError::Timeout` past the deadline.
 | Method | Endpoint |
 |---|---|
 | `search_memories(&MemorySearchRequest) -> MemorySearchResponse` | `POST /v1/search` |
+| `build_context(&ContextRequest) -> ContextResponse` | `POST /v1/context` |
 | `profile(&ProfileRequest) -> ProfileResponse` | `POST /v1/profile` |
 
 `MemorySearchRequest` implements `Default` with the server's defaults
 (`search_mode: "hybrid"`, `limit: 10`, `threshold: 0.5`), so struct-update
 syntax is the idiomatic call style. Set `digest: true` for the ready-to-inject
 context block (`response.digest`).
+Use `build_context` when the prompt needs a hard budget, coverage across multiple
+sources, and structured inclusion/omission diagnostics.
 
 ### Memories
 

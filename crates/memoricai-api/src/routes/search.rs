@@ -57,3 +57,13 @@ pub async fn memory_search_post(
         .await?;
     Ok(Json(resp))
 }
+
+pub async fn context_post(
+    State(state): State<AppState>,
+    Auth(ctx): Auth,
+    Json(mut req): Json<ContextRequest>,
+) -> ApiResult<Json<ContextResponse>> {
+    req.container_tag = scoped_tag(&state, &ctx, req.container_tag.as_deref())?;
+    let resp = state.engine.build_context(&ctx.org.id, &req).await?;
+    Ok(Json(resp))
+}

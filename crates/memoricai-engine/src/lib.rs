@@ -2,6 +2,7 @@
 //! search, and profiles. `Engine` is the facade the API + MCP build on.
 
 pub mod chunk;
+pub mod context;
 pub mod extract;
 pub mod media;
 pub mod memory;

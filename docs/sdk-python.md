@@ -66,12 +66,19 @@ client.search_memories(q, *, container_tag=None, search_mode="hybrid",
                        limit=10, threshold=0.5, digest=False,
                        rerank=False, rewrite_query=False,
                        include=None) -> dict             # POST /v1/search
+
+client.build_context(q, *, container_tag=None, mode="auto",
+                     budget_tokens=12000, max_sources=8, threshold=0.5,
+                     rewrite_query=False, filters=None,
+                     include_digest=True) -> dict       # POST /v1/context
 ```
 
 `search_memories(..., digest=True)` adds `"digest"` to the response, the
 compact, date-stamped context block described in the [API docs](api.md#post-v1search).
 `include` takes the raw API shape, e.g.
 `{"documents": True, "relatedMemories": True}`.
+`build_context(...)` returns a bounded context packet plus per-source evidence
+and explicit budget/source-limit omission diagnostics.
 
 ### Profile
 

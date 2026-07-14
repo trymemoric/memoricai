@@ -141,6 +141,67 @@ export interface MemorySearchResponse {
   digest?: string;
 }
 
+export interface ContextRequest {
+  q: string;
+  containerTag?: string;
+  mode?: "auto" | "lookup" | "aggregation";
+  budgetTokens?: number;
+  maxSources?: number;
+  threshold?: number;
+  rewriteQuery?: boolean;
+  filters?: unknown;
+  includeDigest?: boolean;
+}
+
+export interface ContextEvidence {
+  rank: number;
+  sourceId: string;
+  documentId: string;
+  sessionId?: string;
+  date?: string;
+  score: number;
+  included: boolean;
+  availableChars: number;
+  includedChars: number;
+  truncated: boolean;
+  omissionReason?: "sourceLimit" | "budget" | "noContent";
+  content?: string;
+}
+
+export interface ContextOmission {
+  rank: number;
+  sourceId: string;
+  documentId: string;
+  reason: "sourceLimit" | "budget" | "noContent";
+}
+
+export interface ContextDiagnostics {
+  mode: "lookup" | "aggregation";
+  aggregationQuery: boolean;
+  budgetTokens: number;
+  budgetChars: number;
+  usedChars: number;
+  estimatedTokens: number;
+  digestChars: number;
+  evidenceChars: number;
+  sourcesConsidered: number;
+  sourcesSelected: number;
+  sourcesIncluded: number;
+  sourcesOmitted: number;
+  truncatedSources: number;
+  digestTruncated: boolean;
+  hardTruncated: false;
+  omissions: ContextOmission[];
+}
+
+export interface ContextResponse {
+  context: string;
+  digest?: string;
+  evidence: ContextEvidence[];
+  diagnostics: ContextDiagnostics;
+  timing: number;
+}
+
 export interface Profile {
   static?: string[];
   dynamic?: string[];
@@ -286,6 +347,11 @@ export class MemoricaiClient {
   /** POST /v1/search — memory-graph search; digest: true adds ready-to-inject context. */
   async searchMemories(req: MemorySearchRequest): Promise<MemorySearchResponse> {
     return this.request("POST", "/v1/search", req);
+  }
+
+  /** POST /v1/context — bounded, source-aware context ready for an LLM prompt. */
+  async buildContext(req: ContextRequest): Promise<ContextResponse> {
+    return this.request("POST", "/v1/context", req);
   }
 
   /** POST /v1/profile — static/dynamic/bucketed user profile. */

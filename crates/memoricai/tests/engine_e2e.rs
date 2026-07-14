@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use memoricai_auth::AuthService;
 use memoricai_core::dto::{
-    CreateMemoriesRequest, IngestRequest, MemoryInput, MemorySearchRequest, PatchMemoryRequest,
-    ProfileRequest, SearchInclude,
+    ContextRequest, CreateMemoriesRequest, IngestRequest, MemoryInput, MemorySearchRequest,
+    PatchMemoryRequest, ProfileRequest, SearchInclude,
 };
 use memoricai_db::Db;
 use memoricai_engine::{Engine, EngineConfig};
@@ -172,6 +172,26 @@ async fn ingest_search_profile_end_to_end() {
         digest.contains("Grace") && digest.contains("## "),
         "digest should contain the fact under a date header, got {digest:?}"
     );
+
+    // Context assembly combines the digest with bounded, provenance-bearing excerpts.
+    let context = engine
+        .build_context(
+            &org.id,
+            &ContextRequest {
+                q: "what is my name".into(),
+                container_tag: Some(tag.clone()),
+                budget_tokens: 256,
+                max_sources: 4,
+                threshold: 0.01,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("build context");
+    assert!(context.context.contains("Grace"), "{context:?}");
+    assert!(context.context.chars().count() <= 1_024);
+    assert!(context.evidence.iter().any(|item| item.included));
+    assert!(!context.diagnostics.hard_truncated);
 
     // A version chain remains append-only across more than one update.
     let first_memory_id = res

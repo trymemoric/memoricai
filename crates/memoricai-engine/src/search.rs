@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 impl Engine {
-    fn validate_query(query: &str) -> Result<()> {
+    pub(crate) fn validate_query(query: &str) -> Result<()> {
         if query.trim().is_empty() || query.len() > 4096 {
             return Err(Error::BadRequest(
                 "query must contain between 1 and 4096 bytes".into(),
@@ -20,7 +20,7 @@ impl Engine {
         Ok(())
     }
 
-    fn validate_threshold(value: f32, name: &str) -> Result<()> {
+    pub(crate) fn validate_threshold(value: f32, name: &str) -> Result<()> {
         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
             return Err(Error::BadRequest(format!(
                 "{name} must be a finite number between 0 and 1"
@@ -277,6 +277,30 @@ impl Engine {
         req: &MemorySearchRequest,
         default_tag: Option<&str>,
     ) -> Result<MemorySearchResponse> {
+        self.search_memories_inner(org_id, req, default_tag, None)
+            .await
+    }
+
+    /// Context assembly may explicitly select lookup or aggregation behavior.
+    /// Keep that override internal so the existing `/v1/search` contract and its
+    /// deterministic auto-detection remain unchanged.
+    pub(crate) async fn search_memories_for_context(
+        &self,
+        org_id: &str,
+        req: &MemorySearchRequest,
+        aggregate: bool,
+    ) -> Result<MemorySearchResponse> {
+        self.search_memories_inner(org_id, req, None, Some(aggregate))
+            .await
+    }
+
+    async fn search_memories_inner(
+        &self,
+        org_id: &str,
+        req: &MemorySearchRequest,
+        default_tag: Option<&str>,
+        aggregate_override: Option<bool>,
+    ) -> Result<MemorySearchResponse> {
         Self::validate_query(&req.q)?;
         if req.limit == 0 || req.limit > 100 {
             return Err(Error::BadRequest("limit must be between 1 and 100".into()));
@@ -318,7 +342,8 @@ impl Engine {
             // A digest draws on a wider slice of matches than the result page;
             // aggregation-shaped queries ("how many…", "list all…") need
             // completeness, not top-k relevance, so they fetch wider still.
-            let aggregate = req.digest && is_aggregation_query(&req.q);
+            let aggregate =
+                req.digest && aggregate_override.unwrap_or_else(|| is_aggregation_query(&req.q));
             let mut fetch = (req.limit as i64) * 3;
             if req.digest {
                 fetch = fetch.max(if aggregate { 200 } else { 60 });
@@ -787,7 +812,7 @@ impl Engine {
 /// Deterministic detector for aggregation/enumeration-shaped queries, where
 /// digest completeness matters more than top-k relevance ("how many…",
 /// "list all…", "which of the…"). False positives only widen the digest.
-fn is_aggregation_query(q: &str) -> bool {
+pub(crate) fn is_aggregation_query(q: &str) -> bool {
     let q = q.to_lowercase();
     const PHRASES: &[&str] = &[
         "how many",

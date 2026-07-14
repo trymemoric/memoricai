@@ -695,6 +695,7 @@ fn is_read_operation(method: &str, path: &str) -> bool {
                 | "/v1/documents/documents"
                 | "/v1/documents/search"
                 | "/v1/search"
+                | "/v1/context"
                 | "/v1/profile"
                 | "/v1/profile/buckets"
                 | "/v1/connections/list"
@@ -790,6 +791,7 @@ mod tests {
     #[test]
     fn read_only_post_allowlist_is_semantic_and_exact() {
         assert!(is_read_operation("POST", "/v1/search"));
+        assert!(is_read_operation("POST", "/v1/context"));
         assert!(!is_read_operation("POST", "/v1/memories"));
         assert!(!is_read_operation("POST", "/v1/search/export"));
     }

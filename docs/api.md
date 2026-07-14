@@ -20,7 +20,7 @@ Three credential kinds are accepted:
 | Container-scoped key (`POST /v1/auth/scoped-key`) | One container tag, fixed endpoint allowlist, own rate limit |
 | OAuth2 access token (built-in OIDC provider; used by MCP clients) | Intersection of the token's scopes and the user's membership |
 
-Scoped keys may only call: `/v1/documents*`, `/v1/memories*`, `/v1/search`, `/v1/profile`, `/v1/router`, `/v1/session`.
+Scoped keys may only call: `/v1/documents*`, `/v1/memories*`, `/v1/search`, `/v1/context`, `/v1/profile`, `/v1/router`, `/v1/session`.
 
 ## Errors
 
@@ -161,6 +161,36 @@ A `GET /v1/documents/search?q=…&limit=…` variant exists with defaults for ev
 - **`digest: true`** additionally returns a compact, ready-to-inject context block: the top matching facts grouped by source session/document, date-stamped (using the document's `date` metadata when present and each fact's extracted `eventDate`), latest versions only, ~4k-char budget. Aggregation-shaped queries (“how many…”, “list all…”) automatically widen the digest (up to 200 memories, 8k chars) because completeness beats top-k relevance for counting. Composition is deterministic, no model calls.
 
 Response: `{ "results": [{ "id", "memory?", "chunk?", "similarity", "metadata", "updatedAt", "version", "rootMemoryId?", "context?", "documents?" }], "timing": <ms>, "total": n, "digest?": "…" }`
+
+---
+
+## Context assembly
+
+### `POST /v1/context`
+
+Builds an LLM-ready context packet from the memory digest and relevant document excerpts:
+
+```json
+{
+  "q": "How many art events did I attend?",
+  "containerTag": "mc_project_default",
+  "mode": "auto",
+  "budgetTokens": 12000,
+  "maxSources": 8,
+  "threshold": 0.05,
+  "rewriteQuery": false,
+  "filters": null,
+  "includeDigest": true
+}
+```
+
+- `mode` is `auto` (default), `lookup`, or `aggregation`. Auto uses the same deterministic aggregation-query detector as memory digests; an explicit mode overrides it.
+- `budgetTokens` is 256-32768. It is an approximate input budget using four characters per token; both the character budget and estimated token use are returned.
+- `maxSources` is 1-20. The packer allocates excerpt space fairly across distinct sources instead of filling the context from the first long document.
+- Only matching chunks are included, not full source documents. Truncation happens inside individual digest/excerpt blocks at Unicode-safe boundaries; the assembled context is never hard-sliced.
+- Every candidate remains visible in `evidence`, with rank, source/document/session/date provenance, score, included and available character counts, truncation status, and an explicit `omissionReason` (`sourceLimit`, `budget`, or `noContent`).
+
+Response: `{ "context", "digest?", "evidence": […], "diagnostics": { "mode", "aggregationQuery", "budgetTokens", "budgetChars", "usedChars", "estimatedTokens", "digestChars", "evidenceChars", "sourcesConsidered", "sourcesSelected", "sourcesIncluded", "sourcesOmitted", "truncatedSources", "digestTruncated", "hardTruncated": false, "omissions": […] }, "timing": <ms> }`
 
 ---
 

@@ -301,6 +301,7 @@ pub fn build_router(state: AppState) -> Router {
             post(search::document_search_post).get(search::document_search_get),
         )
         .route("/v1/search", post(search::memory_search_post))
+        .route("/v1/context", post(search::context_post))
         // profile
         .route("/v1/profile", post(profile::profile))
         // projects / container tags

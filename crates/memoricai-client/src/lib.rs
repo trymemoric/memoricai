@@ -26,6 +26,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 pub use memoricai_core::dto::{
+    ContextDiagnostics, ContextEvidence, ContextOmission, ContextRequest, ContextResponse,
     CreateMemoriesRequest, CreateMemoriesResponse, DocumentListRequest, DocumentListResponse,
     DocumentSearchRequest, DocumentSearchResponse, ForgetMatchingRequest, ForgetMatchingResponse,
     ForgetRequest, IngestRequest, IngestResponse, MemoryInput, MemorySearchRequest,
@@ -229,6 +230,12 @@ impl Client {
     /// request to receive a compact, date-stamped context digest.
     pub async fn search_memories(&self, req: &MemorySearchRequest) -> Result<MemorySearchResponse> {
         self.request(reqwest::Method::POST, "/v1/search", Some(req))
+            .await
+    }
+
+    /// `POST /v1/context` — bounded, source-aware context ready for an LLM prompt.
+    pub async fn build_context(&self, req: &ContextRequest) -> Result<ContextResponse> {
+        self.request(reqwest::Method::POST, "/v1/context", Some(req))
             .await
     }
 

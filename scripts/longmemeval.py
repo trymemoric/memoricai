@@ -14,14 +14,15 @@ Setup:
      `longmemeval_s_cleaned.json`) and point LME_DATA at it.
   2. Start `memoricai serve` on a fresh database; put its API key in
      `lme.key` next to this script (or LME_API_KEY).
-  3. For the reader/judge, put an OpenAI key in `openai.key` next to this
-     script and set LME_READER=openai (default is `claude -p`).
+  3. For the reader/judge, set OPENAI_API_KEY (or put it in `openai.key` next
+     to this script) and set LME_READER=openai (default is `claude -p`).
 
 Env: LME_DATA, LME_API_KEY, LME_N (default 100; 500 = full set), LME_SUFFIX,
 LME_READER=claude|openai, LME_WHOLE_SESSIONS=1, LME_MERGE_STATE,
 LME_DIGEST=1 (digest-only contexts), LME_HYBRID=1 (digest + top sessions —
-the reported configuration). State lives in lme_state*.json / lme_rows*.jsonl
-next to this script.
+the v0.3.0 reported configuration), LME_CONTEXT=1 (bounded `/v1/context`
+configuration). State lives in lme_state*.json / lme_rows*.jsonl next to this
+script.
 """
 import concurrent.futures as cf
 import json
@@ -57,7 +58,7 @@ OPENAI_MODEL = os.environ.get("LME_OPENAI_MODEL", "gpt-4o-2024-08-06")
 # Judge stays fixed across reader-model runs so accuracy stays comparable to the
 # baseline; only the reader (LME_OPENAI_MODEL) should vary between runs.
 JUDGE_MODEL = os.environ.get("LME_JUDGE_MODEL", "gpt-4o-2024-08-06")
-OPENAI_KEY = (
+OPENAI_KEY = os.environ.get("OPENAI_API_KEY") or (
     (SCRATCH / "openai.key").read_text().strip()
     if (SCRATCH / "openai.key").exists()
     else ""
@@ -251,6 +252,7 @@ def cmd_wait():
 
 DIGEST_MODE = os.environ.get("LME_DIGEST") == "1"
 HYBRID_MODE = os.environ.get("LME_HYBRID") == "1"
+CONTEXT_MODE = os.environ.get("LME_CONTEXT") == "1"
 
 
 def cmd_retrieve():
@@ -258,6 +260,72 @@ def cmd_retrieve():
     doc2sess = {d["doc_id"]: d["session_id"] for d in state["docs"]}
     rows = []
     lat = []
+    if CONTEXT_MODE:
+        # Same ~11k-token answer-context budget and official downstream prompts
+        # as the reported hybrid run, assembled by the engine's bounded packer.
+        for q in state["questions"]:
+            code, body, ms = call(
+                "POST",
+                "/v1/context",
+                {
+                    "q": q["question"],
+                    "containerTag": q["tag"],
+                    "mode": "auto",
+                    "budgetTokens": 11250,
+                    "maxSources": TOP_K,
+                    "threshold": 0.05,
+                    "includeDigest": True,
+                },
+            )
+            lat.append(ms)
+            evidence = body.get("evidence", []) if code == 200 else []
+            diagnostics = body.get("diagnostics", {}) if code == 200 else {}
+            retrieved = []
+            included = []
+            seen_retrieved = set()
+            seen_included = set()
+            for item in evidence:
+                sid = item.get("sessionId") or item.get("sourceId") or "?"
+                if sid not in seen_retrieved:
+                    seen_retrieved.add(sid)
+                    retrieved.append(sid)
+                if item.get("included") and sid not in seen_included:
+                    seen_included.add(sid)
+                    included.append(sid)
+            evid = set(q["answer_session_ids"])
+            context = body.get("context", "") if code == 200 else ""
+            rows.append(
+                {
+                    **q,
+                    "retrieved_sessions": retrieved,
+                    "included_sessions": included,
+                    "recall_any_at5": bool(evid & set(retrieved[:5])),
+                    "recall_any_at10": bool(evid & set(retrieved[:10])),
+                    "coverage_all_at10": evid <= set(retrieved[:10]) if evid else True,
+                    "context_recall_any": bool(evid & set(included)),
+                    "context_coverage_all": evid <= set(included) if evid else True,
+                    "search_ms": round(ms, 1),
+                    "context": context,
+                    "context_diagnostics": diagnostics,
+                }
+            )
+            print(
+                f"{q['question_id']} context={len(context)}ch "
+                f"sources={len(included)} r@10={bool(evid & set(retrieved[:10]))} "
+                f"{ms:.0f}ms",
+                flush=True,
+            )
+        ROWS.write_text("\n".join(json.dumps(r) for r in rows))
+        import statistics
+
+        print(
+            f"context retrieve done; latency mean={statistics.fmean(lat):.0f}ms; "
+            f"R_any@5={sum(r['recall_any_at5'] for r in rows)}/{len(rows)} "
+            f"R_any@10={sum(r['recall_any_at10'] for r in rows)}/{len(rows)} "
+            f"Cov_all@10={sum(r['coverage_all_at10'] for r in rows)}/{len(rows)} "
+            f"Context_cov={sum(r['context_coverage_all'] for r in rows)}/{len(rows)}"
+        )
+        return
     if HYBRID_MODE:
         # digest (aggregated facts) + top full sessions, ~10k tokens total
         for q in state["questions"]:
@@ -572,6 +640,23 @@ def cmd_report():
     import statistics
 
     out["search_ms_mean"] = round(statistics.fmean(r["search_ms"] for r in rows), 1)
+    if rows and "context_recall_any" in rows[0]:
+        out["context_recall_any"] = round(
+            sum(r["context_recall_any"] for r in rows) / len(rows) * 100, 1
+        )
+        out["context_coverage_all"] = round(
+            sum(r["context_coverage_all"] for r in rows) / len(rows) * 100, 1
+        )
+        out["context_chars_mean"] = round(
+            statistics.fmean(len(r["context"]) for r in rows), 1
+        )
+        out["context_sources_mean"] = round(
+            statistics.fmean(
+                r.get("context_diagnostics", {}).get("sourcesIncluded", 0)
+                for r in rows
+            ),
+            1,
+        )
     print(json.dumps(out, indent=2))
 
 

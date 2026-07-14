@@ -15,6 +15,18 @@ fn default_threshold() -> f32 {
 fn default_search_mode() -> String {
     "hybrid".to_string()
 }
+fn default_context_mode() -> String {
+    "auto".to_string()
+}
+fn default_context_budget_tokens() -> u32 {
+    12_000
+}
+fn default_context_max_sources() -> u32 {
+    8
+}
+fn default_true() -> bool {
+    true
+}
 
 // ---------------- ingestion ----------------
 
@@ -296,6 +308,118 @@ pub struct MemorySearchResponse {
     /// Present when the request set `digest: true` and memories matched.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
+}
+
+// ---------------- ready-to-inject context ----------------
+
+/// Build bounded, source-diverse context from memory and document retrieval.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextRequest {
+    pub q: String,
+    #[serde(default)]
+    pub container_tag: Option<String>,
+    /// `auto`, `lookup`, or `aggregation`. `auto` uses the deterministic
+    /// aggregation-query detector.
+    #[serde(default = "default_context_mode")]
+    pub mode: String,
+    /// Approximate input budget. The engine uses a documented four-characters-per-token
+    /// estimate and reports the resulting estimate in diagnostics.
+    #[serde(default = "default_context_budget_tokens")]
+    pub budget_tokens: u32,
+    /// Maximum distinct source documents represented in the final context.
+    #[serde(default = "default_context_max_sources")]
+    pub max_sources: u32,
+    #[serde(default = "default_threshold")]
+    pub threshold: f32,
+    #[serde(default)]
+    pub rewrite_query: bool,
+    #[serde(default)]
+    pub filters: Option<Value>,
+    #[serde(default = "default_true")]
+    pub include_digest: bool,
+}
+
+impl Default for ContextRequest {
+    fn default() -> Self {
+        Self {
+            q: String::new(),
+            container_tag: None,
+            mode: default_context_mode(),
+            budget_tokens: default_context_budget_tokens(),
+            max_sources: default_context_max_sources(),
+            threshold: default_threshold(),
+            rewrite_query: false,
+            filters: None,
+            include_digest: true,
+        }
+    }
+}
+
+/// One source considered by the context packer. Omitted sources remain in the response
+/// with `included=false` and an explicit `omissionReason`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextEvidence {
+    pub rank: u32,
+    pub source_id: String,
+    pub document_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    pub score: f32,
+    pub included: bool,
+    pub available_chars: usize,
+    pub included_chars: usize,
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub omission_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextOmission {
+    pub rank: u32,
+    pub source_id: String,
+    pub document_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextDiagnostics {
+    pub mode: String,
+    pub aggregation_query: bool,
+    pub budget_tokens: u32,
+    pub budget_chars: usize,
+    pub used_chars: usize,
+    pub estimated_tokens: usize,
+    pub digest_chars: usize,
+    pub evidence_chars: usize,
+    pub sources_considered: usize,
+    pub sources_selected: usize,
+    pub sources_included: usize,
+    pub sources_omitted: usize,
+    pub truncated_sources: usize,
+    pub digest_truncated: bool,
+    /// Always false for the bounded packer: truncation happens within individual
+    /// evidence blocks, never by slicing the assembled context.
+    pub hard_truncated: bool,
+    pub omissions: Vec<ContextOmission>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextResponse {
+    pub context: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    pub evidence: Vec<ContextEvidence>,
+    pub diagnostics: ContextDiagnostics,
+    pub timing: u64,
 }
 
 // ---------------- memories ----------------

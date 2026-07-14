@@ -33,7 +33,7 @@ Everything ships in a single binary: HTTP API (`/v1`), an [MCP](https://modelcon
 ## Features
 
 - **Ingestion pipeline**, turns text, URLs, documents, code, images, and audio/video into embedded atomic memories using durable Postgres-backed jobs with retries, versioning, relations, and expiry.
-- **Search**, combines chunk-level RAG with graph-aware memory search across `memories`, `hybrid`, and `documents` modes, with optional query rewriting, reranking, and ready-to-inject context digests.
+- **Search & context**, combines chunk-level RAG with graph-aware memory search, then assembles budgeted, source-aware context with explicit inclusion, truncation, and omission diagnostics.
 - **Profiles**, builds static, dynamic, and bucketed user profiles in the background and serves them through a fast lookup path.
 - **Multi-tenancy & auth**, isolates organizations with API keys, rate-limited scoped keys, and a built-in OAuth2/OIDC provider for MCP clients.
 - **Connectors**, syncs Google Drive, Gmail, Notion, OneDrive, GitHub, Granola, S3-compatible stores, and guarded web crawls with per-run tracking.
@@ -132,6 +132,11 @@ curl -s localhost:7373/v1/search \
   -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
   -d '{"q":"what is my name","containerTag":"mc_project_default","searchMode":"hybrid"}'
 
+# context (bounded digest + source-fair excerpts)
+curl -s localhost:7373/v1/context \
+  -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"q":"what is my name","containerTag":"mc_project_default","budgetTokens":12000}'
+
 # profile
 curl -s localhost:7373/v1/profile \
   -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
@@ -152,7 +157,7 @@ JSON and multipart bodies are capped at 12 MiB; individual document/file content
 |---|---|
 | Documents | `POST/GET /v1/documents`, `/v1/documents/{batch,file,list,documents,processing,bulk}`, `GET/PATCH/DELETE /v1/documents/{id}` |
 | Memories | `POST/PATCH/DELETE /v1/memories`, `POST /v1/memories/forget-matching` (bulk semantic forget with dry-run) |
-| Search | `POST/GET /v1/documents/search` (chunk RAG), `POST /v1/search` (`searchMode`: `memories` \| `hybrid` \| `documents`; `digest: true` adds a compact date-stamped context digest) |
+| Search | `POST/GET /v1/documents/search` (chunk RAG), `POST /v1/search` (memory/hybrid search), `POST /v1/context` (budgeted, source-aware prompt context + diagnostics) |
 | Profiles | `POST /v1/profile`, `POST /v1/profile/buckets`, `POST /v1/buckets` |
 | Projects | `GET/POST /v1/projects`, `DELETE /v1/projects/{id}`, `/v1/container-tags/*` (incl. inferred-memory review) |
 | Auth | `GET /v1/session`, `POST /v1/auth/scoped-key`, `DELETE /v1/auth/scoped-key/{id}` |
@@ -166,7 +171,7 @@ See [`docs/api.md`](docs/api.md) for the full endpoint reference (request/respon
 
 ## SDKs
 
-First-party clients for the `/v1` API, all covering documents, search (including the `digest` context mode), profiles, and memory management, with 429/5xx retry built in:
+First-party clients for the `/v1` API, all covering documents, search, budgeted context assembly, profiles, and memory management, with 429/5xx retry built in:
 
 | Language | Where | Install |
 |---|---|---|

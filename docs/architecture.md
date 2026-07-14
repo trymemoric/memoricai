@@ -29,7 +29,7 @@ The workspace has strictly downward dependencies (no cycles):
    document, and returns `{id, status:"queued"}` in milliseconds. Postgres is the source of truth
    for the queue; a tokio worker pool atomically claims jobs with leases and bounded attempts.
    Abandoned jobs recover after restart. Searches never wait on the queue.
-3. **Retrieval**, `/v1/documents/search` (chunk RAG) and `/v1/search` (memory / hybrid) embed the query
+3. **Retrieval**, `/v1/documents/search` (chunk RAG), `/v1/search` (memory / hybrid), and `/v1/context` (bounded memory digest plus source-fair excerpts) embed the query
    (optionally rewriting it into variations), run vector search in the tenant's namespace, merge
    and threshold, optionally rerank, and attach version-graph context. `/v1/profile` serves a
    cached static/dynamic/bucket profile.

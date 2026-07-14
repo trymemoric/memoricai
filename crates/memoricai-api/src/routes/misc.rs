@@ -27,6 +27,7 @@ pub async fn openapi() -> Json<Value> {
             "/v1/memories": { "post": { "summary": "Create memories" }, "delete": { "summary": "Forget a memory" }, "patch": { "summary": "Versioned update" } },
             "/v1/memories/forget-matching": { "post": { "summary": "Bulk semantic forget" } },
             "/v1/search": { "post": { "summary": "Memory / hybrid search" } },
+            "/v1/context": { "post": { "summary": "Build bounded, source-aware LLM context" } },
             "/v1/profile": { "post": { "summary": "Entity profile fast path" } },
             "/v1/projects": { "get": { "summary": "List projects" }, "post": { "summary": "Create project" } },
             "/v1/settings": { "get": { "summary": "Get settings" }, "patch": { "summary": "Update settings" } },

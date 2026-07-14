@@ -20,6 +20,7 @@ pub const SCOPED_KEY_ALLOWED_ENDPOINTS: &[&str] = &[
     "/v1/documents",
     "/v1/memories",
     "/v1/search",
+    "/v1/context",
     "/v1/profile",
     "/v1/router",
     "/v1/session",

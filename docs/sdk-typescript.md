@@ -66,6 +66,7 @@ waitForDocument(id: string, timeoutMs = 120_000): Promise<MemoricaiDocument>
 
 ```ts
 searchMemories(req: MemorySearchRequest): Promise<MemorySearchResponse> // POST /v1/search
+buildContext(req: ContextRequest): Promise<ContextResponse>             // POST /v1/context
 profile(req: { containerTag; q?; threshold?; include?; buckets? }): Promise<ProfileResponse>
 ```
 
@@ -73,6 +74,10 @@ profile(req: { containerTag; q?; threshold?; include?; buckets? }): Promise<Prof
 `searchMode?: "memories" | "hybrid" | "documents"`, `limit`, `threshold`,
 `rerank`, `rewriteQuery`, `filters`, `include`, and **`digest?: boolean`**, when true the response carries `digest`, the compact date-stamped context block
 (see the [API docs](api.md#post-v1search)).
+
+`buildContext` accepts `q`, `containerTag`, `mode`, `budgetTokens`,
+`maxSources`, `threshold`, `rewriteQuery`, `filters`, and `includeDigest`; the
+response includes the bounded context, structured evidence, and packing diagnostics.
 
 ### Memories
 
@@ -102,4 +107,5 @@ health(): Promise<{ status: string; version: string }>      // GET /health
 `DocumentListResponse`, `DocumentSearchRequest`, `DocumentSearchResult`,
 `DocumentSearchResponse`, `ChunkHit`, `MemorySearchRequest`,
 `MemorySearchResult`, `MemorySearchResponse`, `Profile`, `ProfileResponse`,
+`ContextRequest`, `ContextEvidence`, `ContextDiagnostics`, `ContextResponse`,
 `MemoryInput`, `MemoricaiMemory`, `ClientOptions`.
