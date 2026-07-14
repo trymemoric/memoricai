@@ -2,16 +2,15 @@
 
 <img src="assets/memoricai-m-logo.svg" alt="memoricai logo" width="96" height="96">
 
-# memoricai
+# memoricAI
 
-**The second brain for AI agents, a self-hostable memory & context engine in a single Rust binary.**
+**The second brain for AI agents, with a powerful and lightweight memory & context engine**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](rust-toolchain.toml)
 
-
-[Benchmarks](#benchmarks) •
 [Quickstart](#quickstart) •
+[Benchmarks](#benchmarks) •
 [Configuration](#configuration) •
 [HTTP API](#http-api) •
 [MCP server](#mcp-server) •
@@ -38,6 +37,66 @@ Everything ships in a single binary: HTTP API (`/v1`), an [MCP](https://modelcon
 - **Multi-tenancy & auth**, isolates organizations with API keys, rate-limited scoped keys, and a built-in OAuth2/OIDC provider for MCP clients.
 - **Connectors**, syncs Google Drive, Gmail, Notion, OneDrive, GitHub, Granola, S3-compatible stores, and guarded web crawls with per-run tracking.
 - **Memory Router**, injects relevant memories into OpenAI-compatible chat requests before forwarding them to the upstream model.
+## Quickstart
+
+Prerequisites: **Rust 1.88+** and **Postgres with the pgvector extension**.
+
+```bash
+# 1. Postgres + pgvector, pick one:
+docker run -d --name memoricai-pg -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=memoricai -p 5432:5432 pgvector/pgvector:pg16
+# ...or with Homebrew:
+#   brew install postgresql@16 pgvector && brew services start postgresql@16
+#   createdb memoricai && psql -d memoricai -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+
+# 2. Build (or: docker pull ghcr.io/trymemoric/memoricai:latest)
+cargo build --release
+
+# 3. Point it at your models (see docs/configuration.md)
+export MEMORICAI_LLM_BASE_URL=https://api.openai.com/v1
+export MEMORICAI_EMBEDDING_BASE_URL=https://api.openai.com/v1
+export OPENAI_API_KEY=sk-...
+
+# 4. Configure production secrets and create the first owner key
+export MEMORICAI_DATABASE_URL="postgres://postgres:postgres@localhost:5432/memoricai"
+export MEMORICAI_ENV=production
+export MEMORICAI_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+./target/release/memoricai key create --org-name myorg --email me@example.com
+
+# 5. Run (migrations apply automatically on startup)
+./target/release/memoricai serve
+```
+
+```bash
+./target/release/memoricai key create --org-name myorg --email me@example.com
+```
+
+Talk to it:
+
+```bash
+KEY=mc_...   # the printed key
+
+# ingest
+curl -s localhost:7373/v1/documents \
+  -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"content":"My name is Ada and I love Rust.","containerTag":"mc_project_default"}'
+
+# search (hybrid memory + chunk search)
+curl -s localhost:7373/v1/search \
+  -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"q":"what is my name","containerTag":"mc_project_default","searchMode":"hybrid"}'
+
+# context (bounded digest + source-fair excerpts)
+curl -s localhost:7373/v1/context \
+  -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"q":"what is my name","containerTag":"mc_project_default","budgetTokens":12000}'
+
+# profile
+curl -s localhost:7373/v1/profile \
+  -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"containerTag":"mc_project_default"}'
+```
+
 
 ## Benchmarks
 
@@ -80,68 +139,6 @@ On the adversarial category (446 unanswerable questions, excluded above per Mem0
 ¹ Self-reported. 81.6% is [Supermemory's published GPT-4o-reader result](https://supermemory.ai/research/longmembench/), the like-for-like comparison; their per-category figures and 95% overall come from the same page's more favorable configuration.
 ² As reported in Zep's LongMemEval paper (GPT-4o reader).
 ³ LLM-judge scores from Mem0's paper (their measurements, including their Zep run, which Zep disputes; Zep claims ~75% under its own setup).
-
-## Quickstart
-
-Prerequisites: **Rust 1.88+** and **Postgres with the pgvector extension**.
-
-```bash
-# 1. Postgres + pgvector, pick one:
-docker run -d --name memoricai-pg -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=memoricai -p 5432:5432 pgvector/pgvector:pg16
-# ...or with Homebrew:
-#   brew install postgresql@16 pgvector && brew services start postgresql@16
-#   createdb memoricai && psql -d memoricai -c 'CREATE EXTENSION IF NOT EXISTS vector;'
-
-# 2. Build (or: docker pull ghcr.io/trymemoric/memoricai:latest)
-cargo build --release
-
-# 3. Point it at your models (see docs/configuration.md)
-export MEMORICAI_LLM_BASE_URL=https://api.openai.com/v1
-export MEMORICAI_EMBEDDING_BASE_URL=https://api.openai.com/v1
-export OPENAI_API_KEY=sk-...
-
-# 4. Configure production secrets and create the first owner key
-export MEMORICAI_DATABASE_URL="postgres://postgres:postgres@localhost:5432/memoricai"
-export MEMORICAI_ENV=production
-export MEMORICAI_ENCRYPTION_KEY="$(openssl rand -base64 32)"
-./target/release/memoricai key create --org-name myorg --email me@example.com
-
-# 5. Run (migrations apply automatically on startup)
-./target/release/memoricai serve
-```
-
-Production never creates or prints an owner credential implicitly. Create keys through the explicit command above and store the encryption key and printed API key in your secret manager. Debug/development builds retain the first-run bootstrap convenience. You can mint additional organizations at any time:
-
-```bash
-./target/release/memoricai key create --org-name myorg --email me@example.com
-```
-
-Talk to it:
-
-```bash
-KEY=mc_...   # the printed key
-
-# ingest
-curl -s localhost:7373/v1/documents \
-  -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
-  -d '{"content":"My name is Ada and I love Rust.","containerTag":"mc_project_default"}'
-
-# search (hybrid memory + chunk search)
-curl -s localhost:7373/v1/search \
-  -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
-  -d '{"q":"what is my name","containerTag":"mc_project_default","searchMode":"hybrid"}'
-
-# context (bounded digest + source-fair excerpts)
-curl -s localhost:7373/v1/context \
-  -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
-  -d '{"q":"what is my name","containerTag":"mc_project_default","budgetTokens":12000}'
-
-# profile
-curl -s localhost:7373/v1/profile \
-  -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
-  -d '{"containerTag":"mc_project_default"}'
-```
 
 ## Configuration
 
@@ -229,7 +226,6 @@ Note: the transport is POST-only JSON-RPC (no server-initiated SSE stream); clie
 ## Connectors
 
 All connectors sync on a 4-hour cron (plus an immediate import on creation); every run is recorded in a sync ledger with status and error kind.
-Only one sync may run per connection, provider item IDs are stable across runs, and the configured document limit applies to new items rather than updates. Connection API responses redact secret/token-like metadata fields.
 
 | Provider | Auth | Live updates |
 |---|---|---|
